@@ -59,7 +59,9 @@ namespace dy::Graphics
 		void BuildPipelineStates(RHI::IDevice* device);
 		void BuildRenderPassPlan();
 		void EnsureDepthStencilTarget(RHI::IDevice* device);
+		void EnsureHdrColorTarget(RHI::IDevice* device);
 		void EnsureShadowDepthTarget(RHI::IDevice* device);
+		void RecordToneMapPass(RHI::IDevice* device);
 		void EnsureMaterialStateCapacity(std::size_t materialCount);
 		void UpdateMaterialStates(const Scene& scene);
 		void UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device);
@@ -73,10 +75,14 @@ namespace dy::Graphics
 		std::vector<char> m_pixelShaderSource;
 		std::vector<char> m_shadowVertexShaderSource;
 		std::vector<char> m_computeSkinningShaderSource;
+		std::vector<char> m_toneMapVertexShaderSource;
+		std::vector<char> m_toneMapPixelShaderSource;
 		RHI::IPipelineState* m_pipeline = nullptr;
 		RHI::IPipelineState* m_shadowPipeline = nullptr;
 		RHI::IPipelineState* m_skinningPipeline = nullptr;
+		RHI::IPipelineState* m_toneMapPipeline = nullptr;
 		RHI::ITexture* m_depthStencilTarget = nullptr;
+		RHI::ITexture* m_hdrColorTarget = nullptr;
 		RHI::ITexture* m_shadowDepthTarget = nullptr;
 		RHI::IBuffer* m_lightingBuffer = nullptr;
 		RHI::IBuffer* m_shadowMatrixBuffer = nullptr;

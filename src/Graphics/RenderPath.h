@@ -61,6 +61,7 @@ namespace dy::Graphics
 		RHI::IPipelineState* pipeline = nullptr;
 		RHI::IPipelineState* skinningPipeline = nullptr;
 		SkinningExecutionMode skinningExecutionMode = SkinningExecutionMode::VertexShader;
+		RHI::ITexture* mainColorTarget = nullptr;
 		RHI::ITexture* depthStencil = nullptr;
 		RHI::IBuffer* lightingBuffer = nullptr;
 		RHI::IBuffer* shadowMatrixBuffer = nullptr;
@@ -72,6 +73,7 @@ namespace dy::Graphics
 		RHI::IPipelineState* shadowPipeline = nullptr;
 		RHI::ITexture* shadowDepth = nullptr;
 		uint32_t shadowMapResolution = 0;
+		bool deferSubmit = false;
 	};
 
 	class IRenderPath
