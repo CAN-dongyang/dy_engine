@@ -329,14 +329,56 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 		}
 	}
 
-	// 정식화된 패스 루프: 모든 전략이 동일 경로를 거친다.
+	// RenderGraph 매 프레임 초기화 및 리소스 Import
+	m_renderGraph.Reset();
+
+	RGResourceHandle backBufferHandle = m_renderGraph.ImportTexture("BackBuffer", device->GetBackBuffer());
+	RGResourceHandle depthStencilHandle = m_renderGraph.ImportTexture("DepthStencilTarget", m_depthStencilTarget);
+	RGResourceHandle shadowDepthHandle{};
+
+	if(m_useExplicitShadowPass && m_shadowDepthTarget != nullptr)
+	{
+		shadowDepthHandle = m_renderGraph.ImportTexture("ShadowDepthTarget", m_shadowDepthTarget);
+	}
+
+	// RenderGraph 패스 수립 (Read/Write 의존성 및 Pipeline 상태 명시)
 	for(const RenderPassDesc& pass : m_renderPasses)
 	{
 		if(!pass.enabled) continue;
-		if(pass.kind == RenderPassKind::MainForward && pass.work == RenderPassWork::Graphics)
+
+		if(pass.kind == RenderPassKind::Shadow && pass.work == RenderPassWork::Graphics)
 		{
-			m_path->RecordMainPass(scene, device, context);
+			if(m_useExplicitShadowPass && shadowDepthHandle.IsValid())
+			{
+				auto& shadowPass = m_renderGraph.AddPass("ShadowPass");
+				shadowPass.Write(shadowDepthHandle, RGResourceAccess::DepthWrite);
+				shadowPass.SetPipeline(m_shadowPipeline);
+				shadowPass.SetExecute([this, &scene, device, &context](RHI::ICommandList*) {
+					// 명시적 그림자 패스 처리
+				});
+			}
 		}
+		else if(pass.kind == RenderPassKind::MainForward && pass.work == RenderPassWork::Graphics)
+		{
+			auto& mainPass = m_renderGraph.AddPass("MainForwardPass");
+
+			if(shadowDepthHandle.IsValid())
+			{
+				mainPass.Read(shadowDepthHandle, RGResourceAccess::ShaderRead);
+			}
+			mainPass.Write(backBufferHandle, RGResourceAccess::RenderTarget);
+			mainPass.Write(depthStencilHandle, RGResourceAccess::DepthWrite);
+			mainPass.SetPipeline(m_pipeline);
+			mainPass.SetExecute([this, &scene, device, &context](RHI::ICommandList*) {
+				m_path->RecordMainPass(scene, device, context);
+			});
+		}
+	}
+
+	// 위상 정렬 후 단일 스레드 커맨드 녹화/실행
+	if(m_renderGraph.Compile())
+	{
+		m_renderGraph.Execute(nullptr);
 	}
 }
 

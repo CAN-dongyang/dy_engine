@@ -6,6 +6,7 @@
 
 #include "Core/Types.h"
 #include "Graphics/GpuScene.h"
+#include "Graphics/RenderGraph.h"
 #include "Graphics/RenderPass.h"
 #include "Graphics/RenderPath.h"
 #include "Graphics/RendererConfig.h"
@@ -83,6 +84,7 @@ namespace dy::Graphics
 		GpuScene m_gpuScene;
 		std::vector<SceneMaterialState> m_materialStates;
 		std::unique_ptr<IRenderPath> m_path;
+		RenderGraph m_renderGraph;
 		RendererBindingMode m_initialBindingMode = RendererBindingMode::PerDrawBind;
 		bool m_hasInitialConfig = false;
 		bool m_clipYFlip = false; // 백엔드 클립공간 Y 뒤집기 필요 여부(Initialize 에서 device 질의)
