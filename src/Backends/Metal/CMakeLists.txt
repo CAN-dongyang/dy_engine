@@ -8,7 +8,9 @@ add_library(${BACKEND_NAME} OBJECT
     MetalDevice.mm
     MetalBuffer.mm
     MetalTexture.mm
+    MetalShader.mm
     MetalPipeline.mm
+    MetalResourceSet.mm
     MetalCommandList.mm
 )
 
@@ -16,13 +18,16 @@ set_source_files_properties(
     MetalDevice.mm
     MetalBuffer.mm
     MetalTexture.mm
+    MetalShader.mm
     MetalPipeline.mm
+    MetalResourceSet.mm
     MetalCommandList.mm
     PROPERTIES COMPILE_FLAGS "-x objective-c++"
 )
 
 target_link_libraries(${BACKEND_NAME} PRIVATE
     Engine_Options
+    "-framework AppKit"
     "-framework Metal"
     "-framework Foundation"
     "-framework QuartzCore"

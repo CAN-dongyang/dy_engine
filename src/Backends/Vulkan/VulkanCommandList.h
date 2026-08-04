@@ -1,108 +1,155 @@
 #pragma once
+
 #include "RHI/ICommandList.h"
-#include "VulkanDevice.h"
-#include <array>
-#include <cstdint>
+#include "VulkanContext.h"
+
+#include <map>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace dy::Backends
 {
+	class VulkanBuffer;
+	class VulkanPipeline;
+	class VulkanResourceSet;
+	class VulkanTexture;
+	struct VulkanObjectDeleter;
 
-// 백엔드 로컬 상한. 렌더러 셰이더 레이아웃을 컴파일타임에 역참조하지 않기 위한 것으로,
-// 실제 사용 개수/크기는 런타임 RHI::ShaderLayoutDesc 값으로 결정되고 배열만 이 상한으로 잡는다.
-inline constexpr uint32_t kMaxDescriptorBindings = 16u;
-inline constexpr uint32_t kMaxMaterialTextures = 8u;
-inline constexpr uint32_t kMaxPushConstantBytes = 256u;
-inline constexpr uint32_t kDefaultMaxRenderTargets = 4u;
-
-class VulkanDevice;
-
-class VulkanCommandList : public dy::RHI::ICommandList
-{
-public:
-	void BindGraphicsPipeline(dy::RHI::IPipelineState* pipelineState) override;
-	void BindGlobalDescriptors() override {}
-	void BindGeometry(const dy::RHI::GeometryBinding& geometry) override;
-	void BindVertexBuffer(dy::RHI::IBuffer* buffer, uint32_t stride, uint32_t offset) override;
-	void BindIndexBuffer(dy::RHI::IBuffer* buffer, dy::RHI::Format format, uint32_t offset) override;
-	void BindConstantBuffer(uint32_t binding, dy::RHI::IBuffer* buffer, uint32_t offset, uint32_t size) override;
-	void BindStorageBuffer(uint32_t binding, dy::RHI::IBuffer* buffer, uint32_t offset, uint32_t size) override;
-	void BindTexture(uint32_t binding, dy::RHI::ITexture* texture) override;
-	void SetInlineConstants(uint32_t size, const void* data) override;
-	void SetRenderTargets(uint32_t numRenderTargets, dy::RHI::ITexture** renderTargets, dy::RHI::ITexture* depthStencil) override;
-	void SetViewport(const dy::RHI::Viewport& viewport) override;
-	void SetScissor(const dy::RHI::Rect& rect) override;
-	void ClearColor(dy::RHI::ITexture* renderTarget, float r, float g, float b, float a) override;
-	void ClearDepth(dy::RHI::ITexture* depthStencil, float depth) override;
-	void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) override;
-	void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
-	void Close() override { m_isClosed = true; }
-
-	void Begin();
-	void End();
-
-private:
-	static constexpr uint32_t kMaxConstantBufferBindings = kMaxDescriptorBindings;
-	static constexpr uint32_t kMaxRenderTargets = kDefaultMaxRenderTargets;
-	static constexpr uint32_t kMaxTextureBindings = kMaxDescriptorBindings;
-
-	struct ConstantBufferBinding
+	struct VulkanSubmissionState
 	{
-		dy::RHI::IBuffer* buffer = nullptr;
-		uint32_t offset = 0;
-		uint32_t size = 0;
+		std::unordered_map<VulkanBuffer*, dy::RHI::ResourceState> buffers;
+		std::map<std::pair<VulkanTexture*, uint32_t>, dy::RHI::ResourceState> textureSubresources;
 	};
 
-	struct StorageBufferBinding
+	class VulkanCommandList final : public dy::RHI::ICommandList
 	{
-		dy::RHI::IBuffer* buffer = nullptr;
-		uint32_t offset = 0;
-		uint32_t size = 0;
+	public:
+		explicit VulkanCommandList(const VulkanContext& context);
+
+		void ResourceBarrier(const dy::RHI::ResourceBarrierDesc* barriers, uint32_t count) override;
+		void BeginRendering(const dy::RHI::RenderingDesc& desc) override;
+		void EndRendering() override;
+
+		void BindGraphicsPipeline(dy::RHI::PipelineHandle pipelineState) override;
+		void BindResourceSet(dy::RHI::ResourceSetHandle resourceSet) override;
+		void BindVertexBuffer(uint32_t binding, dy::RHI::BufferHandle buffer, uint32_t offset) override;
+		void BindIndexBuffer(dy::RHI::BufferHandle buffer, dy::RHI::Format format, uint32_t offset) override;
+		void SetInlineConstants(uint32_t offset, uint32_t size, const void* data) override;
+
+		void SetViewport(const dy::RHI::Viewport& viewport) override;
+		void SetScissor(const dy::RHI::Rect& rect) override;
+		void SetStencilReference(uint32_t reference) override;
+
+		void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) override;
+		void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
+		void Close() override;
+
+		[[nodiscard]] bool RecordBufferUpdate(VulkanBuffer& buffer, uint32_t offset, const void* data, uint32_t size);
+		[[nodiscard]] bool RecordTextureUpdate(
+			VulkanTexture& texture,
+			uint32_t mipLevel,
+			uint32_t arrayLayer,
+			const void* data,
+			uint32_t dataSize,
+			uint32_t rowPitch,
+			uint32_t slicePitch);
+
+		[[nodiscard]] VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
+		[[nodiscard]] bool IsClosed() const { return m_closed; }
+		[[nodiscard]] bool IsValid() const { return m_closed && !m_failed; }
+		[[nodiscard]] const std::vector<VulkanTexture*>& GetReferencedSwapchainImages() const
+		{
+			return m_referencedSwapchainImages;
+		}
+		[[nodiscard]] bool ValidateForSubmit(VulkanSubmissionState& state) const;
+		void CommitResourceStates();
+
+	private:
+		friend struct VulkanObjectDeleter;
+
+		~VulkanCommandList() override;
+
+		enum class OperationKind : uint8_t
+		{
+			BufferBarrier,
+			TextureBarrier,
+			BufferRequirement,
+			TextureRequirement,
+			BufferWrite,
+			TextureWrite
+		};
+
+		struct Operation
+		{
+			OperationKind kind = OperationKind::BufferBarrier;
+			VulkanBuffer* buffer = nullptr;
+			VulkanTexture* texture = nullptr;
+			dy::RHI::ResourceState before = dy::RHI::ResourceState::Undefined;
+			dy::RHI::ResourceState after = dy::RHI::ResourceState::Undefined;
+			uint32_t mipLevel = 0;
+			uint32_t arrayLayer = 0;
+		};
+
+		struct StagingAllocation
+		{
+			VkBuffer buffer = VK_NULL_HANDLE;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+		};
+
+		struct VertexBinding
+		{
+			VulkanBuffer* buffer = nullptr;
+			uint32_t offset = 0;
+		};
+
+		[[nodiscard]] bool CreateStagingAllocation(const void* data, uint32_t size, StagingAllocation& allocation);
+		[[nodiscard]] bool RequireBufferState(VulkanBuffer* buffer, dy::RHI::ResourceState state);
+		[[nodiscard]] bool RequireTextureState(
+			VulkanTexture* texture,
+			uint32_t mipLevel,
+			uint32_t arrayLayer,
+			dy::RHI::ResourceState state);
+		[[nodiscard]] bool RequireTextureSubresourcesInState(
+			VulkanTexture* texture,
+			const dy::RHI::TextureSubresourceRange& range,
+			dy::RHI::ResourceState state);
+		[[nodiscard]] bool ValidateDraw(
+			bool indexed,
+			uint32_t vertexCount,
+			uint32_t instanceCount,
+			uint32_t startVertex,
+			uint32_t startInstance) const;
+		void TrackSwapchainImage(VulkanTexture* texture);
+		void Fail() { m_failed = true; }
+
+		VulkanContext m_context;
+		VkCommandPool m_commandPool = VK_NULL_HANDLE;
+		VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
+		VulkanPipeline* m_boundPipeline = nullptr;
+		VulkanResourceSet* m_boundResourceSet = nullptr;
+		VulkanBuffer* m_indexBuffer = nullptr;
+		VulkanTexture* m_depthTexture = nullptr;
+		std::vector<StagingAllocation> m_stagingAllocations;
+		std::vector<Operation> m_operations;
+		std::unordered_map<VulkanBuffer*, dy::RHI::ResourceState> m_bufferStates;
+		std::map<std::pair<VulkanTexture*, uint32_t>, dy::RHI::ResourceState> m_textureStates;
+		std::unordered_map<uint32_t, VertexBinding> m_vertexBindings;
+		std::vector<VulkanTexture*> m_referencedSwapchainImages;
+		std::vector<dy::RHI::Format> m_colorFormats;
+		std::vector<uint8_t> m_inlineConstantCoverage;
+		dy::RHI::Format m_indexFormat = dy::RHI::Format::Unknown;
+		dy::RHI::Format m_depthFormat = dy::RHI::Format::Unknown;
+		dy::RHI::ResourceState m_depthState = dy::RHI::ResourceState::Undefined;
+		uint32_t m_depthMipLevel = 0;
+		uint32_t m_depthArrayLayer = 0;
+		uint32_t m_indexOffset = 0;
+		bool m_rendering = false;
+		bool m_stencilConfigured = false;
+		bool m_closed = false;
+		bool m_failed = false;
+		bool m_hasViewport = false;
+		bool m_hasScissor = false;
+		bool m_hasStencilReference = false;
 	};
-
-	struct DrawCall
-	{
-		bool indexed = false;
-		uint32_t vertexCount = 0;
-		uint32_t indexCount = 0;
-		uint32_t instanceCount = 0;
-		uint32_t startVertex = 0;
-		uint32_t firstIndex = 0;
-		int32_t baseVertex = 0;
-		uint32_t startInstance = 0;
-		uint32_t pushConstantSize = 0;
-		bool hasViewport = false;
-		bool hasScissor = false;
-		dy::RHI::IPipelineState* pipelineState = nullptr;
-		uint32_t vertexStride = 0;
-		dy::RHI::GeometryBinding geometry = {};
-		std::array<ConstantBufferBinding, kMaxConstantBufferBindings> constantBuffers = {};
-		std::array<StorageBufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
-		std::array<dy::RHI::ITexture*, kMaxTextureBindings> textures = {};
-		dy::RHI::Viewport viewport = {};
-		dy::RHI::Rect scissor = {};
-		std::array<uint8_t, kMaxPushConstantBytes> pushConstants = {};
-	};
-
-	friend struct VulkanDevice::Impl;
-	std::array<float, 4> m_clearColor = { 0.4f, 0.7f, 1.0f, 1.0f };
-	float m_clearDepth = 1.0f;
-	uint32_t m_renderTargetCount = 0;
-	std::array<dy::RHI::ITexture*, kMaxRenderTargets> m_renderTargets = {};
-	dy::RHI::ITexture* m_depthStencil = nullptr;
-	dy::RHI::IPipelineState* m_boundPipeline = nullptr;
-	std::array<uint8_t, kMaxPushConstantBytes> m_pendingPushConstants = {};
-	uint32_t m_pendingPushConstantSize = 0;
-	dy::RHI::GeometryBinding m_pendingGeometry = {};
-	std::array<ConstantBufferBinding, kMaxConstantBufferBindings> m_pendingConstantBuffers = {};
-	std::array<StorageBufferBinding, kMaxConstantBufferBindings> m_pendingStorageBuffers = {};
-	std::array<dy::RHI::ITexture*, kMaxTextureBindings> m_pendingTextures = {};
-	bool m_hasPendingViewport = false;
-	bool m_hasPendingScissor = false;
-	dy::RHI::Viewport m_pendingViewport = {};
-	dy::RHI::Rect m_pendingScissor = {};
-	std::vector<DrawCall> m_drawCalls;
-	bool m_isClosed = false;
-};
-
 }

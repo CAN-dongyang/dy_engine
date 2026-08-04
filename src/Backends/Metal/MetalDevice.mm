@@ -3,11 +3,14 @@
 #include "MetalTexture.h"
 #include "MetalPipeline.h"
 #include "MetalCommandList.h"
+#include "MetalResourceSet.h"
+#include "MetalShader.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #import <AppKit/AppKit.h>
@@ -17,6 +20,15 @@
 
 namespace dy::Backends
 {
+    struct MetalObjectDeleter
+    {
+        template<typename Object>
+        void operator()(Object* object) const
+        {
+            delete object;
+        }
+    };
+
     namespace
     {
         RHI::Format FromLayerPixelFormat(MTLPixelFormat format)
@@ -48,6 +60,48 @@ namespace dy::Backends
             return status == MTLCommandBufferStatusCompleted ||
                 status == MTLCommandBufferStatusError;
         }
+
+		template<typename Object>
+		struct RetiredObject
+		{
+			uint64_t completionValue = 0;
+			std::unique_ptr<Object, MetalObjectDeleter> object;
+		};
+
+		template<typename Object, typename Interface>
+		bool RetireObject(
+			std::vector<std::unique_ptr<Object, MetalObjectDeleter>>& liveObjects,
+			Interface* object,
+			uint64_t completionValue,
+			std::vector<RetiredObject<Object>>& retiredObjects)
+		{
+			const auto found = std::find_if(
+				liveObjects.begin(), liveObjects.end(),
+				[object](const std::unique_ptr<Object, MetalObjectDeleter>& candidate)
+				{
+					return static_cast<Interface*>(candidate.get()) == object;
+				});
+			if(found == liveObjects.end()) return false;
+			retiredObjects.push_back({completionValue, nullptr});
+			retiredObjects.back().object = std::move(*found);
+			liveObjects.erase(found);
+			return true;
+		}
+
+		template<typename Object>
+		void ReclaimObjects(
+			std::vector<RetiredObject<Object>>& objects,
+			uint64_t completedValue)
+		{
+			objects.erase(
+				std::remove_if(
+					objects.begin(), objects.end(),
+					[completedValue](const RetiredObject<Object>& object)
+					{
+						return object.completionValue <= completedValue;
+					}),
+				objects.end());
+		}
     }
 
     struct MetalDevice::Impl
@@ -60,7 +114,7 @@ namespace dy::Backends
         struct Submission
         {
             uint64_t value = 0;
-            std::vector<std::unique_ptr<MetalCommandList>> commandLists;
+            std::vector<std::unique_ptr<MetalCommandList, MetalObjectDeleter>> commandLists;
             id<MTLCommandBuffer> presentCommandBuffer = nil;
             id<CAMetalDrawable> drawable = nil;
             bool waitingForPresent = false;
@@ -81,7 +135,17 @@ namespace dy::Backends
         bool stoppingDrawableAcquisition = false;
 
         std::vector<FrameSlot> frameSlots;
-        std::vector<std::unique_ptr<MetalCommandList>> activeCommandLists;
+        std::vector<std::unique_ptr<MetalCommandList, MetalObjectDeleter>> activeCommandLists;
+		std::vector<std::unique_ptr<MetalBuffer, MetalObjectDeleter>> liveBuffers;
+		std::vector<std::unique_ptr<MetalTexture, MetalObjectDeleter>> liveTextures;
+		std::vector<std::unique_ptr<MetalShader, MetalObjectDeleter>> liveShaders;
+		std::vector<std::unique_ptr<MetalPipeline, MetalObjectDeleter>> livePipelines;
+		std::vector<std::unique_ptr<MetalResourceSet, MetalObjectDeleter>> liveResourceSets;
+		std::vector<RetiredObject<MetalBuffer>> retiredBuffers;
+		std::vector<RetiredObject<MetalTexture>> retiredTextures;
+		std::vector<RetiredObject<MetalShader>> retiredShaders;
+		std::vector<RetiredObject<MetalPipeline>> retiredPipelines;
+		std::vector<RetiredObject<MetalResourceSet>> retiredResourceSets;
         uint32_t nextFrameSlot = 0;
         uint32_t activeFrameSlot = 0;
         bool frameActive = false;
@@ -89,11 +153,9 @@ namespace dy::Backends
         std::vector<Submission> submissions;
         uint64_t nextSubmissionValue = 1;
         uint64_t completedSubmissionValue = 0;
+		uint64_t lastSubmittedValue = 0;
         uint64_t pendingPresentValue = 0;
         bool asyncWorkFailed = false;
-
-        RHI::DescriptorIndex nextDescriptorIndex = 0;
-        std::vector<RHI::ITexture*> textures;
 
         void RequestDrawable()
         {
@@ -195,7 +257,7 @@ namespace dy::Backends
                 if(!IsFinished(completion))
                     break;
 
-                for(const std::unique_ptr<MetalCommandList>& commandList :
+                for(const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& commandList :
                     submission.commandLists)
                 {
                     id<MTLCommandBuffer> commandBuffer =
@@ -219,7 +281,17 @@ namespace dy::Backends
                 ReleaseSubmission(submission);
                 submissions.erase(submissions.begin());
             }
+			CollectRetiredObjects();
         }
+
+		void CollectRetiredObjects()
+		{
+			ReclaimObjects(retiredResourceSets, completedSubmissionValue);
+			ReclaimObjects(retiredPipelines, completedSubmissionValue);
+			ReclaimObjects(retiredShaders, completedSubmissionValue);
+			ReclaimObjects(retiredTextures, completedSubmissionValue);
+			ReclaimObjects(retiredBuffers, completedSubmissionValue);
+		}
 
         Submission* FindSubmission(uint64_t value)
         {
@@ -266,6 +338,16 @@ namespace dy::Backends
         for(Impl::Submission& submission : m_impl->submissions)
             Impl::ReleaseSubmission(submission);
         m_impl->submissions.clear();
+		m_impl->retiredResourceSets.clear();
+		m_impl->liveResourceSets.clear();
+		m_impl->retiredPipelines.clear();
+		m_impl->livePipelines.clear();
+		m_impl->retiredShaders.clear();
+		m_impl->liveShaders.clear();
+		m_impl->retiredTextures.clear();
+		m_impl->liveTextures.clear();
+		m_impl->retiredBuffers.clear();
+		m_impl->liveBuffers.clear();
 
         if(m_impl->backBufferTex != nullptr)
         {
@@ -384,7 +466,7 @@ namespace dy::Backends
         backBufferDesc.format = actualFormat;
         backBufferDesc.usage = RHI::TextureUsage::RenderTarget;
 
-        auto backBuffer = std::unique_ptr<MetalTexture>(
+        auto backBuffer = std::unique_ptr<MetalTexture, MetalObjectDeleter>(
             new MetalTexture(backBufferDesc));
         dispatch_queue_t drawableQueue = dispatch_queue_create(
             "dy.engine.metal.drawable", DISPATCH_QUEUE_SERIAL);
@@ -405,13 +487,18 @@ namespace dy::Backends
     bool MetalDevice::BeginFrame()
     {
         m_impl->CollectCompletedSubmissions();
-        if(m_impl->asyncWorkFailed || m_impl->frameActive ||
+        if(m_impl->asyncWorkFailed ||
             m_impl->pendingPresentValue != 0 || m_impl->metalLayer == nil ||
             m_impl->backBufferTex == nullptr || m_impl->frameSlots.empty() ||
             m_impl->windowHandle == nullptr || ![NSThread isMainThread])
         {
             return false;
         }
+		if(m_impl->frameActive)
+		{
+			return m_impl->currentDrawable != nil &&
+				m_impl->backBufferTex->GetNativeTexture() != nullptr;
+		}
 
         NSWindow* window = (__bridge NSWindow*)m_impl->windowHandle;
         NSView* contentView = window.contentView;
@@ -465,7 +552,7 @@ namespace dy::Backends
         if(texture == nil || texture.width == 0 || texture.height == 0 ||
             texture.width != expectedWidth || texture.height != expectedHeight ||
             actualFormat == RHI::Format::Unknown ||
-            actualFormat != m_impl->backBufferTex->GetFormat())
+            actualFormat != m_impl->backBufferTex->GetDesc().format)
         {
             m_impl->ClearCurrentDrawable();
             return false;
@@ -492,18 +579,9 @@ namespace dy::Backends
             return nullptr;
         }
 
-        auto commandList = std::make_unique<MetalCommandList>(
-            (__bridge void*)m_impl->commandQueue);
+        auto commandList = std::unique_ptr<MetalCommandList, MetalObjectDeleter>(
+            new MetalCommandList((__bridge void*)m_impl->commandQueue));
         if(!commandList->Begin()) return nullptr;
-
-        for(uint32_t index = 0; index < m_impl->textures.size(); ++index)
-        {
-            RHI::ITexture* boundTexture = m_impl->textures[index];
-            if(boundTexture == nullptr) continue;
-            auto* metalTexture = static_cast<MetalTexture*>(boundTexture);
-            commandList->SetNativeTexture(
-                metalTexture->GetNativeTexture(), index);
-        }
 
         MetalCommandList* result = commandList.get();
         m_impl->activeCommandLists.push_back(std::move(commandList));
@@ -512,14 +590,13 @@ namespace dy::Backends
 
     bool MetalDevice::Submit(RHI::ICommandList** cmdLists, uint32_t count)
     {
-        if(m_impl->asyncWorkFailed || cmdLists == nullptr || count == 0)
+        if(cmdLists == nullptr || count == 0)
         {
             return false;
         }
 
         std::vector<MetalCommandList*> submittedCommandLists;
         submittedCommandLists.reserve(count);
-        bool usesBackBuffer = false;
         for(uint32_t index = 0; index < count; ++index)
         {
             if(cmdLists[index] == nullptr) return false;
@@ -531,21 +608,45 @@ namespace dy::Backends
             const auto owned = std::find_if(
                 m_impl->activeCommandLists.begin(),
                 m_impl->activeCommandLists.end(),
-                [command = cmdLists[index]](const std::unique_ptr<MetalCommandList>& candidate)
+                [command = cmdLists[index]](
+                    const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& candidate)
                 {
                     return candidate.get() == command;
                 });
             if(owned == m_impl->activeCommandLists.end()) return false;
 
             MetalCommandList* commandList = owned->get();
-            if(!commandList->IsClosed() ||
-                commandList->GetNativeCommandBuffer() == nullptr)
-            {
-                return false;
-            }
+			if(!commandList->IsClosed()) return false;
             submittedCommandLists.push_back(commandList);
-            usesBackBuffer = usesBackBuffer || commandList->UsesBackBuffer();
         }
+
+		std::vector<std::unique_ptr<MetalCommandList, MetalObjectDeleter>> consumedCommandLists;
+		consumedCommandLists.reserve(count);
+		for(MetalCommandList* commandList : submittedCommandLists)
+		{
+			const auto owned = std::find_if(
+				m_impl->activeCommandLists.begin(),
+				m_impl->activeCommandLists.end(),
+				[commandList](
+					const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& candidate)
+				{
+					return candidate.get() == commandList;
+				});
+			consumedCommandLists.push_back(std::move(*owned));
+			m_impl->activeCommandLists.erase(owned);
+		}
+
+		bool usesBackBuffer = false;
+		for(MetalCommandList* commandList : submittedCommandLists)
+		{
+			if(!commandList->IsValid() ||
+				commandList->GetNativeCommandBuffer() == nullptr)
+			{
+				return false;
+			}
+			usesBackBuffer = usesBackBuffer || commandList->UsesBackBuffer();
+		}
+		if(m_impl->asyncWorkFailed) return false;
 
         if(usesBackBuffer &&
             (!m_impl->frameActive || m_impl->currentDrawable == nil ||
@@ -554,31 +655,36 @@ namespace dy::Backends
             return false;
         }
 
+		MetalSubmissionState resourceStates = {};
+		for(MetalCommandList* commandList : submittedCommandLists)
+		{
+			if(!commandList->ValidateForSubmit(resourceStates)) return false;
+		}
+		if(usesBackBuffer)
+		{
+			const auto key = std::make_pair(m_impl->backBufferTex, 0u);
+			const auto found = resourceStates.textureSubresources.find(key);
+			const RHI::ResourceState finalState =
+				found == resourceStates.textureSubresources.end()
+				? m_impl->backBufferTex->GetState(0, 0) : found->second;
+			if(finalState != RHI::ResourceState::Present) return false;
+		}
+
         m_impl->submissions.emplace_back();
         Impl::Submission& submission = m_impl->submissions.back();
         submission.value = m_impl->nextSubmissionValue++;
-        submission.commandLists.reserve(count);
-        for(MetalCommandList* commandList : submittedCommandLists)
-        {
-            const auto owned = std::find_if(
-                m_impl->activeCommandLists.begin(),
-                m_impl->activeCommandLists.end(),
-                [commandList](const std::unique_ptr<MetalCommandList>& candidate)
-                {
-                    return candidate.get() == commandList;
-                });
-            submission.commandLists.push_back(std::move(*owned));
-            m_impl->activeCommandLists.erase(owned);
-        }
+		submission.commandLists = std::move(consumedCommandLists);
 
-        for(const std::unique_ptr<MetalCommandList>& commandList :
+        for(const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& commandList :
             submission.commandLists)
         {
+			commandList->CommitResourceStates();
             id<MTLCommandBuffer> commandBuffer =
                 (__bridge id<MTLCommandBuffer>)
                     commandList->GetNativeCommandBuffer();
             [commandBuffer commit];
         }
+		m_impl->lastSubmittedValue = submission.value;
 
         if(usesBackBuffer)
         {
@@ -636,74 +742,314 @@ namespace dy::Backends
         submission->waitingForPresent = false;
     }
 
-    RHI::IBuffer* MetalDevice::CreateBuffer(const RHI::BufferDesc& desc)
+    RHI::BufferHandle MetalDevice::CreateBuffer(const RHI::BufferDesc& desc)
     {
-        return new MetalBuffer(desc, (__bridge void*)m_impl->device);
+		auto buffer = std::unique_ptr<MetalBuffer, MetalObjectDeleter>(
+			new MetalBuffer(desc, (__bridge void*)m_impl->device));
+		if(buffer->GetNativeBuffer() == nullptr) return nullptr;
+		MetalBuffer* result = buffer.get();
+		m_impl->liveBuffers.push_back(std::move(buffer));
+		return result;
     }
 
-    RHI::ITexture* MetalDevice::CreateTexture(const RHI::TextureDesc& desc)
+    RHI::TextureHandle MetalDevice::CreateTexture(const RHI::TextureDesc& desc)
     {
-        return new MetalTexture(desc, (__bridge void*)m_impl->device);
+		auto texture = std::unique_ptr<MetalTexture, MetalObjectDeleter>(
+			new MetalTexture(desc, (__bridge void*)m_impl->device));
+		if(texture->GetNativeTexture() == nullptr) return nullptr;
+		MetalTexture* result = texture.get();
+		m_impl->liveTextures.push_back(std::move(texture));
+		return result;
     }
 
-    RHI::IPipelineState* MetalDevice::CreateGraphicsPipeline(
+	RHI::ShaderHandle MetalDevice::CreateShader(const RHI::ShaderDesc& desc)
+	{
+		auto shader = std::unique_ptr<MetalShader, MetalObjectDeleter>(
+			new MetalShader(desc, (__bridge void*)m_impl->device));
+		if(shader->GetNativeFunction() == nullptr) return nullptr;
+		MetalShader* result = shader.get();
+		m_impl->liveShaders.push_back(std::move(shader));
+		return result;
+	}
+
+    RHI::PipelineHandle MetalDevice::CreateGraphicsPipeline(
         const RHI::GraphicsPipelineDesc& desc)
     {
-        auto pipeline = std::make_unique<MetalPipeline>(
-            desc, (__bridge void*)m_impl->device);
-        if(pipeline->GetNativePipeline() == nullptr) return nullptr;
-        return pipeline.release();
+		const auto ownsShader = [this](RHI::ShaderHandle shader)
+		{
+			return std::find_if(
+				m_impl->liveShaders.begin(), m_impl->liveShaders.end(),
+				[shader](const std::unique_ptr<MetalShader, MetalObjectDeleter>& candidate)
+				{
+					return static_cast<RHI::ShaderHandle>(candidate.get()) == shader;
+				}) != m_impl->liveShaders.end();
+		};
+		if(!ownsShader(desc.vertexShader) ||
+			(desc.fragmentShader != nullptr && !ownsShader(desc.fragmentShader)))
+		{
+			return nullptr;
+		}
+        auto pipeline = std::unique_ptr<MetalPipeline, MetalObjectDeleter>(
+            new MetalPipeline(desc, (__bridge void*)m_impl->device));
+		if(pipeline->GetNativePipeline() == nullptr ||
+			(desc.depthStencil.format != RHI::Format::Unknown &&
+				pipeline->GetNativeDepthStencil() == nullptr)) return nullptr;
+		MetalPipeline* result = pipeline.get();
+		m_impl->livePipelines.push_back(std::move(pipeline));
+		return result;
     }
 
-    void MetalDevice::DestroyBuffer(RHI::IBuffer* buffer)
+	RHI::ResourceSetHandle MetalDevice::CreateResourceSet(
+		const RHI::ResourceSetDesc& desc)
+	{
+		const auto pipelineIt = std::find_if(
+			m_impl->livePipelines.begin(), m_impl->livePipelines.end(),
+			[requested = desc.pipeline](
+				const std::unique_ptr<MetalPipeline, MetalObjectDeleter>& candidate)
+			{
+				return static_cast<RHI::PipelineHandle>(candidate.get()) == requested;
+			});
+		if(pipelineIt == m_impl->livePipelines.end() ||
+			(desc.bindingCount != 0 && desc.bindings == nullptr))
+		{
+			return nullptr;
+		}
+
+		const RHI::PipelineLayoutDesc& layout = (*pipelineIt)->GetLayout();
+		std::set<std::pair<uint32_t, uint32_t>> populated;
+		uint32_t textureBindingCount = 0;
+		for(uint32_t index = 0; index < desc.bindingCount; ++index)
+		{
+			const RHI::ResourceBinding& binding = desc.bindings[index];
+			const RHI::ResourceBindingLayout* declaration = nullptr;
+			for(uint32_t layoutIndex = 0; layoutIndex < layout.bindingCount; ++layoutIndex)
+			{
+				if(layout.bindings[layoutIndex].binding == binding.binding)
+				{
+					declaration = &layout.bindings[layoutIndex];
+					break;
+				}
+			}
+			if(declaration == nullptr ||
+				declaration->type == RHI::ResourceBindingType::StaticSampler ||
+				binding.arrayElement >= declaration->count ||
+				!populated.emplace(binding.binding, binding.arrayElement).second)
+			{
+				return nullptr;
+			}
+
+			switch(declaration->type)
+			{
+			case RHI::ResourceBindingType::ConstantBuffer:
+			case RHI::ResourceBindingType::ReadOnlyStorageBuffer:
+			case RHI::ResourceBindingType::ReadWriteStorageBuffer:
+			{
+				const auto bufferIt = std::find_if(
+					m_impl->liveBuffers.begin(), m_impl->liveBuffers.end(),
+					[requested = binding.buffer](
+						const std::unique_ptr<MetalBuffer, MetalObjectDeleter>& candidate)
+					{
+						return static_cast<RHI::BufferHandle>(candidate.get()) == requested;
+					});
+				if(bufferIt == m_impl->liveBuffers.end() || binding.texture != nullptr)
+					return nullptr;
+				MetalBuffer* buffer = bufferIt->get();
+				const RHI::BufferUsage required =
+					declaration->type == RHI::ResourceBindingType::ConstantBuffer
+					? RHI::BufferUsage::Constant : RHI::BufferUsage::Storage;
+				if(buffer->GetNativeBuffer() == nullptr || binding.size == 0 ||
+					(buffer->GetDesc().usage & required) == RHI::BufferUsage::None ||
+					binding.offset > buffer->GetDesc().size ||
+					binding.size > buffer->GetDesc().size - binding.offset)
+				{
+					return nullptr;
+				}
+				break;
+			}
+			case RHI::ResourceBindingType::SampledTexture:
+			case RHI::ResourceBindingType::StorageTexture:
+			{
+				const auto textureIt = std::find_if(
+					m_impl->liveTextures.begin(), m_impl->liveTextures.end(),
+					[requested = binding.texture](
+						const std::unique_ptr<MetalTexture, MetalObjectDeleter>& candidate)
+					{
+						return static_cast<RHI::TextureHandle>(candidate.get()) == requested;
+					});
+				if(textureIt == m_impl->liveTextures.end() || binding.buffer != nullptr)
+					return nullptr;
+				MetalTexture* texture = textureIt->get();
+				const RHI::TextureUsage required =
+					declaration->type == RHI::ResourceBindingType::SampledTexture
+					? RHI::TextureUsage::ShaderResource : RHI::TextureUsage::Storage;
+				const RHI::TextureDesc& textureDesc = texture->GetDesc();
+				if(texture->GetNativeTexture() == nullptr ||
+					(textureDesc.usage & required) == RHI::TextureUsage::None ||
+					binding.subresources.firstMipLevel >= textureDesc.mipLevels ||
+					binding.subresources.firstArrayLayer >= textureDesc.depthOrArraySize)
+				{
+					return nullptr;
+				}
+				const uint32_t mipCount = binding.subresources.mipLevelCount == 0
+					? textureDesc.mipLevels - binding.subresources.firstMipLevel
+					: binding.subresources.mipLevelCount;
+				const uint32_t layerCount = binding.subresources.arrayLayerCount == 0
+					? textureDesc.depthOrArraySize - binding.subresources.firstArrayLayer
+					: binding.subresources.arrayLayerCount;
+				if(mipCount > textureDesc.mipLevels - binding.subresources.firstMipLevel ||
+					layerCount > textureDesc.depthOrArraySize - binding.subresources.firstArrayLayer ||
+					(declaration->type == RHI::ResourceBindingType::StorageTexture && mipCount != 1))
+				{
+					return nullptr;
+				}
+				++textureBindingCount;
+				break;
+			}
+			default:
+				return nullptr;
+			}
+		}
+
+		for(uint32_t index = 0; index < layout.bindingCount; ++index)
+		{
+			const RHI::ResourceBindingLayout& declaration = layout.bindings[index];
+			if(declaration.type == RHI::ResourceBindingType::StaticSampler) continue;
+			for(uint32_t element = 0; element < declaration.count; ++element)
+			{
+				if(populated.find({declaration.binding, element}) == populated.end())
+					return nullptr;
+			}
+		}
+		auto resourceSet = std::unique_ptr<MetalResourceSet, MetalObjectDeleter>(
+			new MetalResourceSet(desc));
+		if(resourceSet->GetTextureBindings().size() != textureBindingCount) return nullptr;
+		MetalResourceSet* result = resourceSet.get();
+		m_impl->liveResourceSets.push_back(std::move(resourceSet));
+		return result;
+	}
+
+    void MetalDevice::DestroyBuffer(RHI::BufferHandle buffer)
     {
-        delete buffer;
+		if(RetireObject(
+			m_impl->liveBuffers,
+			buffer,
+			m_impl->lastSubmittedValue,
+			m_impl->retiredBuffers))
+		{
+			m_impl->CollectCompletedSubmissions();
+		}
     }
 
-    void MetalDevice::DestroyTexture(RHI::ITexture* texture)
+    void MetalDevice::DestroyTexture(RHI::TextureHandle texture)
     {
-        delete texture;
+		if(RetireObject(
+			m_impl->liveTextures,
+			texture,
+			m_impl->lastSubmittedValue,
+			m_impl->retiredTextures))
+		{
+			m_impl->CollectCompletedSubmissions();
+		}
     }
 
-    void MetalDevice::DestroyPipelineState(RHI::IPipelineState* pipeline)
+	void MetalDevice::DestroyShader(RHI::ShaderHandle shader)
+	{
+		if(RetireObject(
+			m_impl->liveShaders,
+			shader,
+			m_impl->lastSubmittedValue,
+			m_impl->retiredShaders))
+		{
+			m_impl->CollectCompletedSubmissions();
+		}
+	}
+
+    void MetalDevice::DestroyPipeline(RHI::PipelineHandle pipeline)
     {
-        delete pipeline;
+		if(RetireObject(
+			m_impl->livePipelines,
+			pipeline,
+			m_impl->lastSubmittedValue,
+			m_impl->retiredPipelines))
+		{
+			m_impl->CollectCompletedSubmissions();
+		}
     }
 
-    bool MetalDevice::UpdateTexture(
-        RHI::ITexture* texture, const void* data, uint32_t rowPitch)
+	void MetalDevice::DestroyResourceSet(RHI::ResourceSetHandle resourceSet)
+	{
+		if(RetireObject(
+			m_impl->liveResourceSets,
+			resourceSet,
+			m_impl->lastSubmittedValue,
+			m_impl->retiredResourceSets))
+		{
+			m_impl->CollectCompletedSubmissions();
+		}
+	}
+
+	bool MetalDevice::UpdateBuffer(
+		RHI::ICommandList& commandList,
+		RHI::BufferHandle buffer,
+		uint32_t offset,
+		const void* data,
+		uint32_t size)
     {
-        if(texture == nullptr || data == nullptr || rowPitch == 0)
-            return false;
-
-        auto* metalTexture = static_cast<MetalTexture*>(texture);
-        id<MTLTexture> nativeTexture =
-            (__bridge id<MTLTexture>)metalTexture->GetNativeTexture();
-        if(nativeTexture == nil) return false;
-
-        const MTLRegion region = MTLRegionMake2D(
-            0, 0, texture->GetWidth(), texture->GetHeight());
-        [nativeTexture replaceRegion:region
-                          mipmapLevel:0
-                            withBytes:data
-                          bytesPerRow:rowPitch];
-        return true;
+		const auto ownedCommandList = std::find_if(
+			m_impl->activeCommandLists.begin(), m_impl->activeCommandLists.end(),
+			[requested = &commandList](
+				const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& candidate)
+			{
+				return static_cast<RHI::ICommandList*>(candidate.get()) == requested;
+			});
+		const auto ownedBuffer = std::find_if(
+			m_impl->liveBuffers.begin(), m_impl->liveBuffers.end(),
+			[buffer](const std::unique_ptr<MetalBuffer, MetalObjectDeleter>& candidate)
+			{
+				return static_cast<RHI::BufferHandle>(candidate.get()) == buffer;
+			});
+		return ownedCommandList != m_impl->activeCommandLists.end() &&
+			ownedBuffer != m_impl->liveBuffers.end() &&
+			(*ownedCommandList)->RecordBufferUpdate(
+				ownedBuffer->get(), offset, data, size);
     }
 
-    RHI::DescriptorIndex MetalDevice::AllocateDescriptorSlot()
+	bool MetalDevice::UpdateTexture(
+		RHI::ICommandList& commandList,
+		RHI::TextureHandle texture,
+		uint32_t mipLevel,
+		uint32_t arrayLayer,
+		const void* data,
+		uint32_t dataSize,
+		uint32_t rowPitch,
+		uint32_t slicePitch)
     {
-        return m_impl->nextDescriptorIndex++;
+		const auto ownedCommandList = std::find_if(
+			m_impl->activeCommandLists.begin(), m_impl->activeCommandLists.end(),
+			[requested = &commandList](
+				const std::unique_ptr<MetalCommandList, MetalObjectDeleter>& candidate)
+			{
+				return static_cast<RHI::ICommandList*>(candidate.get()) == requested;
+			});
+		const auto ownedTexture = std::find_if(
+			m_impl->liveTextures.begin(), m_impl->liveTextures.end(),
+			[texture](const std::unique_ptr<MetalTexture, MetalObjectDeleter>& candidate)
+			{
+				return static_cast<RHI::TextureHandle>(candidate.get()) == texture;
+			});
+		return ownedCommandList != m_impl->activeCommandLists.end() &&
+			ownedTexture != m_impl->liveTextures.end() &&
+			(*ownedCommandList)->RecordTextureUpdate(
+				ownedTexture->get(),
+				mipLevel,
+				arrayLayer,
+				data,
+				dataSize,
+				rowPitch,
+				slicePitch);
     }
 
-    void MetalDevice::UpdateDescriptorSlot(
-        RHI::DescriptorIndex index, RHI::ITexture* texture)
-    {
-        if(index >= m_impl->textures.size())
-            m_impl->textures.resize(index + 1, nullptr);
-        m_impl->textures[index] = texture;
-    }
-
-    RHI::ITexture* MetalDevice::GetBackBuffer()
+    RHI::TextureHandle MetalDevice::GetBackBuffer()
     {
         return m_impl->metalLayer == nil ? nullptr : m_impl->backBufferTex;
     }

@@ -379,8 +379,6 @@ namespace dy::Math
 		return projection;
 	}
 
-	// 캐노니컬 클립공간 = Y-up(D3D12/Metal 네이티브). 백엔드별 Y 뒤집기는 상위 레이어가
-	// device 능력(RequiresClipSpaceYFlip)으로 처리한다(Vulkan=true). 투영 함수는 백엔드를 모른다.
 	[[nodiscard]] inline float4x4 PerspectiveRH_ZO(float fovYRadians, float aspect, float nearPlane, float farPlane)
 	{
 		const float safeFov = std::max(std::min(fovYRadians, 3.0f), 0.1f);

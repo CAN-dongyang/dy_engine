@@ -26,6 +26,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC Engine_Options)
 
 include(Dependencies)
 include(BuildOptions)
+include(ShaderAssets)
 
 # Only add the executable if this is the main project being built (not when included as a subdirectory in another project)
 if(CMAKE_PROJECT_NAME  STREQUAL PROJECT_NAME)

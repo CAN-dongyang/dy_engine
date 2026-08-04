@@ -2,33 +2,27 @@
 
 #include <array>
 #include <cstdint>
-#include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
+#include "Graphics/Private/RendererShaderLayout.h"
 #include "Graphics/Scene.h"
-#include "RHI/IBuffer.h"
+#include "RHI/Buffer.h"
 #include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
-#include "RHI/IPipelineState.h"
-#include "RHI/ITexture.h"
+#include "RHI/Pipeline.h"
+#include "RHI/ResourceSet.h"
+#include "RHI/Texture.h"
 
 using namespace dy;
 using namespace dy::Graphics;
 
-namespace Layout = dy::Graphics::RendererShaderLayout;
+namespace Layout = dy::Graphics::Private::RendererShaderLayout;
 
 namespace
 {
-	struct RendererVertex
-	{
-		float px = 0.0f, py = 0.0f, pz = 0.0f;
-		float nx = 0.0f, ny = 0.0f, nz = 1.0f;
-		float u = 0.0f, v = 0.0f;
-		float tx = 1.0f, ty = 0.0f, tz = 0.0f, tw = 1.0f;
-	};
-
-	static_assert(sizeof(RendererVertex) == sizeof(float) * Layout::kRendererVertexFloatCount, "Renderer vertex layout must match shader layout.");
+	using RendererVertex = Layout::RendererVertex;
 
 	struct MeshRange
 	{
@@ -59,8 +53,6 @@ namespace
 		uint32_t instanceCount = 0;
 	};
 
-	[[nodiscard]] uint32_t ComputeTextureFlags(const SceneMaterialState& materialState, const RenderFlags& renderFlags);
-
 	[[nodiscard]] std::vector<RendererVertex> BuildRendererVertices(const MeshData& mesh)
 	{
 		std::vector<RendererVertex> vertices;
@@ -68,10 +60,18 @@ namespace
 		for(const Vertex& vertex : mesh.vertices)
 		{
 			RendererVertex out = {};
-			out.px = vertex.position.x; out.py = vertex.position.y; out.pz = vertex.position.z;
-			out.nx = vertex.normal.x;   out.ny = vertex.normal.y;   out.nz = vertex.normal.z;
-			out.u = vertex.uv.x;        out.v = vertex.uv.y;
-			out.tx = vertex.tangent.x;  out.ty = vertex.tangent.y;  out.tz = vertex.tangent.z; out.tw = vertex.tangent.w;
+			out.px = vertex.position.x;
+			out.py = vertex.position.y;
+			out.pz = vertex.position.z;
+			out.nx = vertex.normal.x;
+			out.ny = vertex.normal.y;
+			out.nz = vertex.normal.z;
+			out.u = vertex.uv.x;
+			out.v = vertex.uv.y;
+			out.tx = vertex.tangent.x;
+			out.ty = vertex.tangent.y;
+			out.tz = vertex.tangent.z;
+			out.tw = vertex.tangent.w;
 			vertices.push_back(out);
 		}
 		return vertices;
@@ -80,90 +80,406 @@ namespace
 	[[nodiscard]] std::vector<uint32_t> BuildRendererIndices(const MeshData& mesh)
 	{
 		if(!mesh.indices.empty()) return mesh.indices;
+
 		std::vector<uint32_t> indices;
 		indices.reserve(mesh.vertices.size());
-		for(uint32_t i = 0; i < static_cast<uint32_t>(mesh.vertices.size()); ++i) indices.push_back(i);
+		for(uint32_t index = 0; index < static_cast<uint32_t>(mesh.vertices.size()); ++index)
+		{
+			indices.push_back(index);
+		}
 		return indices;
 	}
 
-	void UploadBuffer(RHI::IBuffer* buffer, const void* source, uint32_t sizeBytes)
+	void DestroyBuffer(RHI::IDevice* device, RHI::BufferHandle& buffer, uint32_t& sizeBytes, bool& ready)
 	{
-		if(buffer == nullptr || source == nullptr || sizeBytes == 0u) return;
-		void* data = buffer->Map(0);
-		if(data != nullptr)
-		{
-			std::memcpy(data, source, sizeBytes);
-			buffer->Unmap();
-		}
+		if(device != nullptr && buffer != nullptr) device->DestroyBuffer(buffer);
+		buffer = nullptr;
+		sizeBytes = 0;
+		ready = false;
 	}
 
-	bool EnsureBuffer(
+	[[nodiscard]] bool EnsureBuffer(
 		RHI::IDevice* device,
-		RHI::IBuffer*& buffer,
+		RHI::BufferHandle& buffer,
 		uint32_t& currentSizeBytes,
+		bool& ready,
 		uint32_t sizeBytes,
 		uint32_t stride,
 		RHI::BufferUsage usage)
 	{
-		if(device == nullptr || sizeBytes == 0u) return false;
-		if(buffer != nullptr && currentSizeBytes == sizeBytes) return true;
-		if(buffer != nullptr)
+		if(device == nullptr) return false;
+		if(sizeBytes == 0)
 		{
-			device->DestroyBuffer(buffer);
-			buffer = nullptr;
-			currentSizeBytes = 0u;
+			DestroyBuffer(device, buffer, currentSizeBytes, ready);
+			return true;
 		}
-		buffer = device->CreateBuffer(RHI::BufferDesc{ sizeBytes, stride, usage });
+		if(buffer != nullptr && currentSizeBytes == sizeBytes) return true;
+
+		DestroyBuffer(device, buffer, currentSizeBytes, ready);
+		buffer = device->CreateBuffer(RHI::BufferDesc{
+			sizeBytes,
+			stride,
+			usage,
+			RHI::ResourceState::CopyDestination
+		});
 		if(buffer == nullptr) return false;
 		currentSizeBytes = sizeBytes;
 		return true;
 	}
 
-	void DestroyBuffer(RHI::IDevice* device, RHI::IBuffer*& buffer, uint32_t& sizeBytes)
+	[[nodiscard]] bool RecordBufferUpload(
+		RHI::IDevice* device,
+		RHI::ICommandList& commandList,
+		RHI::BufferHandle buffer,
+		const void* data,
+		uint32_t sizeBytes,
+		bool ready,
+		RHI::ResourceState useState)
 	{
-		if(device != nullptr && buffer != nullptr) device->DestroyBuffer(buffer);
-		buffer = nullptr;
-		sizeBytes = 0u;
+		if(device == nullptr || buffer == nullptr || data == nullptr || sizeBytes == 0) return false;
+		if(ready)
+		{
+			const RHI::ResourceBarrierDesc beforeCopy = {
+				buffer,
+				nullptr,
+				useState,
+				RHI::ResourceState::CopyDestination,
+				{}
+			};
+			commandList.ResourceBarrier(&beforeCopy, 1);
+		}
+		if(!device->UpdateBuffer(commandList, buffer, 0, data, sizeBytes))
+		{
+			if(ready)
+			{
+				const RHI::ResourceBarrierDesc restore = {
+					buffer,
+					nullptr,
+					RHI::ResourceState::CopyDestination,
+					useState,
+					{}
+				};
+				commandList.ResourceBarrier(&restore, 1);
+			}
+			return false;
+		}
+
+		const RHI::ResourceBarrierDesc afterCopy = {
+			buffer,
+			nullptr,
+			RHI::ResourceState::CopyDestination,
+			useState,
+			{}
+		};
+		commandList.ResourceBarrier(&afterCopy, 1);
+		return true;
 	}
 
-	void BuildBatchedGeometry(
-		const Scene& scene,
-		RHI::IDevice* device,
-		RHI::IBuffer*& vertexBuffer, uint32_t& vertexBytes,
-		RHI::IBuffer*& indexBuffer, uint32_t& indexBytes,
-		std::vector<MeshRange>& meshRanges)
+	[[nodiscard]] bool ResourceSetMatches(
+		const RHI::ResourceSetHandle resourceSet,
+		RHI::PipelineHandle pipeline,
+		const RHI::ResourceBinding* bindings,
+		uint32_t bindingCount)
 	{
-		const uint32_t meshCount = scene.GetMeshCount();
-		std::vector<RendererVertex> vertices;
-		std::vector<uint32_t> indices;
-		meshRanges.assign(meshCount, {});
-		for(uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex)
+		if(resourceSet == nullptr || resourceSet->GetPipeline() != pipeline ||
+			resourceSet->GetBindingCount() != bindingCount) return false;
+
+		const RHI::ResourceBinding* current = resourceSet->GetBindings();
+		for(uint32_t index = 0; index < bindingCount; ++index)
 		{
-			const MeshData& mesh = scene.GetMesh(static_cast<MeshID>(meshIndex));
-			if(mesh.vertices.empty()) continue;
+			const RHI::ResourceBinding& left = current[index];
+			const RHI::ResourceBinding& right = bindings[index];
+			if(left.binding != right.binding ||
+				left.arrayElement != right.arrayElement || left.buffer != right.buffer ||
+				left.texture != right.texture || left.offset != right.offset || left.size != right.size ||
+				left.subresources.firstMipLevel != right.subresources.firstMipLevel ||
+				left.subresources.mipLevelCount != right.subresources.mipLevelCount ||
+				left.subresources.firstArrayLayer != right.subresources.firstArrayLayer ||
+				left.subresources.arrayLayerCount != right.subresources.arrayLayerCount)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
 
-			std::vector<RendererVertex> meshVertices = BuildRendererVertices(mesh);
-			std::vector<uint32_t> meshIndices = BuildRendererIndices(mesh);
-			if(meshVertices.empty() || meshIndices.empty()) continue;
+	[[nodiscard]] bool ReplaceResourceSet(
+		RHI::IDevice* device,
+		RHI::ResourceSetHandle& resourceSet,
+		RHI::PipelineHandle pipeline,
+		const RHI::ResourceBinding* bindings,
+		uint32_t bindingCount)
+	{
+		if(ResourceSetMatches(resourceSet, pipeline, bindings, bindingCount)) return true;
 
-			MeshRange& range = meshRanges[meshIndex];
-			range.firstVertex = static_cast<uint32_t>(vertices.size());
-			range.firstIndex = static_cast<uint32_t>(indices.size());
-			range.indexCount = static_cast<uint32_t>(meshIndices.size());
-			vertices.insert(vertices.end(), meshVertices.begin(), meshVertices.end());
-			indices.insert(indices.end(), meshIndices.begin(), meshIndices.end());
+		RHI::ResourceSetHandle replacement = device->CreateResourceSet(RHI::ResourceSetDesc{
+			pipeline,
+			bindings,
+			bindingCount
+		});
+		if(replacement == nullptr) return false;
+		if(resourceSet != nullptr) device->DestroyResourceSet(resourceSet);
+		resourceSet = replacement;
+		return true;
+	}
+
+	void DestroyResourceSets(RHI::IDevice* device, std::vector<RHI::ResourceSetHandle>& resourceSets)
+	{
+		if(device != nullptr)
+		{
+			for(RHI::ResourceSetHandle resourceSet : resourceSets)
+			{
+				if(resourceSet != nullptr) device->DestroyResourceSet(resourceSet);
+			}
+		}
+		resourceSets.clear();
+	}
+
+	[[nodiscard]] bool EnsureMaterialResourceSets(
+		RHI::IDevice* device,
+		const RenderPathContext& context,
+		RHI::BufferHandle instanceBuffer,
+		std::vector<RHI::ResourceSetHandle>& resourceSets)
+	{
+		if(device == nullptr || context.pipeline == nullptr || context.materialStates == nullptr ||
+			context.lightingBuffer == nullptr || context.shadowMatrixBuffer == nullptr ||
+			context.shadowDepth == nullptr || instanceBuffer == nullptr) return false;
+
+		const std::vector<SceneMaterialState>& materials = *context.materialStates;
+		while(resourceSets.size() > materials.size())
+		{
+			RHI::ResourceSetHandle resourceSet = resourceSets.back();
+			if(resourceSet != nullptr) device->DestroyResourceSet(resourceSet);
+			resourceSets.pop_back();
+		}
+		resourceSets.resize(materials.size(), nullptr);
+
+		for(uint32_t materialIndex = 0; materialIndex < static_cast<uint32_t>(materials.size()); ++materialIndex)
+		{
+			const SceneMaterialState& material = materials[materialIndex];
+			const std::array<RHI::ResourceBinding, 9> bindings = {{
+				{ RENDERER_BINDING_BASE_COLOR_TEXTURE, 0, nullptr, material.textures[kMaterialBaseColorTextureSlot], 0, 0, {} },
+				{ RENDERER_BINDING_LIGHTING_CONSTANTS, 0, context.lightingBuffer, nullptr, 0, static_cast<uint32_t>(sizeof(Layout::RendererLightingConstants)), {} },
+				{ RENDERER_BINDING_SHADOW_TEXTURE, 0, nullptr, context.shadowDepth, 0, 0, {} },
+				{ RENDERER_BINDING_SHADOW_MATRIX, 0, context.shadowMatrixBuffer, nullptr, 0, static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)), {} },
+				{ RENDERER_BINDING_TRANSFORM_STORAGE, 0, instanceBuffer, nullptr, 0, instanceBuffer->GetDesc().size, {} },
+				{ RENDERER_BINDING_METALLIC_ROUGHNESS_TEXTURE, 0, nullptr, material.textures[kMaterialMetallicRoughnessTextureSlot], 0, 0, {} },
+				{ RENDERER_BINDING_NORMAL_TEXTURE, 0, nullptr, material.textures[kMaterialNormalTextureSlot], 0, 0, {} },
+				{ RENDERER_BINDING_OCCLUSION_TEXTURE, 0, nullptr, material.textures[kMaterialOcclusionTextureSlot], 0, 0, {} },
+				{ RENDERER_BINDING_EMISSIVE_TEXTURE, 0, nullptr, material.textures[kMaterialEmissiveTextureSlot], 0, 0, {} }
+			}};
+			if(!ReplaceResourceSet(
+					device,
+					resourceSets[materialIndex],
+					context.pipeline,
+					bindings.data(),
+					static_cast<uint32_t>(bindings.size()))) return false;
+		}
+		return true;
+	}
+
+	[[nodiscard]] bool EnsureShadowResourceSet(
+		RHI::IDevice* device,
+		const RenderPathContext& context,
+		RHI::BufferHandle instanceBuffer,
+		RHI::ResourceSetHandle& resourceSet)
+	{
+		if(device == nullptr || context.shadowPipeline == nullptr ||
+			context.shadowMatrixBuffer == nullptr || instanceBuffer == nullptr) return false;
+
+		const std::array<RHI::ResourceBinding, 2> bindings = {{
+			{ RENDERER_BINDING_SHADOW_MATRIX, 0, context.shadowMatrixBuffer, nullptr, 0, static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)), {} },
+			{ RENDERER_BINDING_TRANSFORM_STORAGE, 0, instanceBuffer, nullptr, 0, instanceBuffer->GetDesc().size, {} }
+		}};
+		return ReplaceResourceSet(
+			device,
+			resourceSet,
+			context.shadowPipeline,
+			bindings.data(),
+			static_cast<uint32_t>(bindings.size()));
+	}
+
+	[[nodiscard]] uint32_t ComputeTextureFlags(const SceneMaterialState& material, const RenderFlags& renderFlags)
+	{
+		uint32_t flags = material.textureFlags;
+		if(renderFlags.receiveShadow) flags |= RENDERER_TEXTURE_FLAG_RECEIVE_SHADOW;
+		return flags;
+	}
+
+	[[nodiscard]] Layout::DrawConstants MakeDrawConstants(
+		const RendererDesc& config,
+		const MaterialDesc& material,
+		const Transform& transform,
+		uint32_t textureFlags,
+		uint32_t instanceBase)
+	{
+		Layout::DrawConstants constants = {};
+		constants.viewProjectionMatrix = config.viewProjectionMatrix;
+		constants.modelMatrix = transform.worldMatrix;
+		constants.textureFlags = textureFlags;
+		constants.instanceBase = instanceBase;
+		constants.emissiveColor = Math::float4(
+			material.emissiveColor.x,
+			material.emissiveColor.y,
+			material.emissiveColor.z,
+			0.0f);
+		constants.baseColor = material.baseColor;
+		constants.materialParams = Math::float4(
+			material.metallicFactor,
+			material.roughnessFactor,
+			material.normalScale,
+			material.occlusionStrength);
+		return constants;
+	}
+
+	[[nodiscard]] bool ShouldRecordShadow(const RenderPathContext& context)
+	{
+		return context.shadowPipeline != nullptr && context.shadowDepth != nullptr &&
+			context.shadowMatrixBuffer != nullptr && context.shadowMapResolution != 0;
+	}
+
+	[[nodiscard]] bool BeginShadowRendering(
+		RHI::ICommandList& commandList,
+		const RenderPathContext& context,
+		RHI::ResourceSetHandle resourceSet)
+	{
+		if(context.shadowPipeline == nullptr || context.shadowDepth == nullptr || resourceSet == nullptr) return false;
+		if(context.shadowDepthState != RHI::ResourceState::DepthWrite)
+		{
+			const RHI::ResourceBarrierDesc barrier = {
+				nullptr,
+				context.shadowDepth,
+				context.shadowDepthState,
+				RHI::ResourceState::DepthWrite,
+				{}
+			};
+			commandList.ResourceBarrier(&barrier, 1);
 		}
 
-		const uint32_t newVertexBytes = static_cast<uint32_t>(vertices.size() * sizeof(RendererVertex));
-		const uint32_t newIndexBytes = static_cast<uint32_t>(indices.size() * sizeof(uint32_t));
-		if(EnsureBuffer(device, vertexBuffer, vertexBytes, newVertexBytes, static_cast<uint32_t>(sizeof(RendererVertex)), dy::RHI::BufferUsage::Vertex | dy::RHI::BufferUsage::Storage))
+		RHI::DepthStencilAttachment depth = {};
+		depth.texture = context.shadowDepth;
+		depth.state = RHI::ResourceState::DepthWrite;
+		depth.depthLoadOp = RHI::LoadOp::Clear;
+		depth.depthStoreOp = RHI::StoreOp::Store;
+		depth.clearDepth = 1.0f;
+		depth.stencilLoadOp = RHI::LoadOp::Discard;
+		depth.stencilStoreOp = RHI::StoreOp::Discard;
+		commandList.BeginRendering(RHI::RenderingDesc{ nullptr, 0, &depth });
+		commandList.BindGraphicsPipeline(context.shadowPipeline);
+		commandList.BindResourceSet(resourceSet);
+		commandList.SetViewport(RHI::Viewport{
+			0.0f,
+			0.0f,
+			static_cast<float>(context.shadowMapResolution),
+			static_cast<float>(context.shadowMapResolution),
+			0.0f,
+			1.0f
+		});
+		commandList.SetScissor(RHI::Rect{ 0, 0, context.shadowMapResolution, context.shadowMapResolution });
+		return true;
+	}
+
+	void EndShadowRendering(RHI::ICommandList& commandList, RHI::TextureHandle shadowDepth)
+	{
+		commandList.EndRendering();
+		const RHI::ResourceBarrierDesc barrier = {
+			nullptr,
+			shadowDepth,
+			RHI::ResourceState::DepthWrite,
+			RHI::ResourceState::ShaderResource,
+			{}
+		};
+		commandList.ResourceBarrier(&barrier, 1);
+	}
+
+	[[nodiscard]] bool BeginMainRendering(
+		RHI::ICommandList& commandList,
+		RHI::TextureHandle backBuffer,
+		const RenderPathContext& context,
+		bool shadowRecorded)
+	{
+		if(backBuffer == nullptr || context.pipeline == nullptr || context.config == nullptr) return false;
+
+		std::array<RHI::ResourceBarrierDesc, 3> barriers = {};
+		uint32_t barrierCount = 0;
+		barriers[barrierCount++] = {
+			nullptr,
+			backBuffer,
+			RHI::ResourceState::Present,
+			RHI::ResourceState::RenderTarget,
+			{}
+		};
+		if(context.depthStencil != nullptr && context.depthStencilState != RHI::ResourceState::DepthWrite)
 		{
-			UploadBuffer(vertexBuffer, vertices.data(), newVertexBytes);
+			barriers[barrierCount++] = {
+				nullptr,
+				context.depthStencil,
+				context.depthStencilState,
+				RHI::ResourceState::DepthWrite,
+				{}
+			};
 		}
-		if(EnsureBuffer(device, indexBuffer, indexBytes, newIndexBytes, static_cast<uint32_t>(sizeof(uint32_t)), dy::RHI::BufferUsage::Index | RHI::BufferUsage::Storage))
+		if(context.shadowDepth != nullptr && !shadowRecorded &&
+			context.shadowDepthState != RHI::ResourceState::ShaderResource)
 		{
-			UploadBuffer(indexBuffer, indices.data(), newIndexBytes);
+			barriers[barrierCount++] = {
+				nullptr,
+				context.shadowDepth,
+				context.shadowDepthState,
+				RHI::ResourceState::ShaderResource,
+				{}
+			};
 		}
+		commandList.ResourceBarrier(barriers.data(), barrierCount);
+
+		RHI::ColorAttachment color = {};
+		color.texture = backBuffer;
+		color.loadOp = RHI::LoadOp::Clear;
+		color.storeOp = RHI::StoreOp::Store;
+		color.clearColor[0] = context.config->clearColor.x;
+		color.clearColor[1] = context.config->clearColor.y;
+		color.clearColor[2] = context.config->clearColor.z;
+		color.clearColor[3] = context.config->clearColor.w;
+
+		RHI::DepthStencilAttachment depth = {};
+		depth.texture = context.depthStencil;
+		depth.state = RHI::ResourceState::DepthWrite;
+		depth.depthLoadOp = RHI::LoadOp::Clear;
+		depth.depthStoreOp = RHI::StoreOp::Discard;
+		depth.clearDepth = 1.0f;
+		depth.stencilLoadOp = RHI::LoadOp::Discard;
+		depth.stencilStoreOp = RHI::StoreOp::Discard;
+
+		const RHI::RenderingDesc rendering = {
+			&color,
+			1,
+			context.depthStencil != nullptr ? &depth : nullptr
+		};
+		commandList.BeginRendering(rendering);
+		commandList.BindGraphicsPipeline(context.pipeline);
+		commandList.SetViewport(RHI::Viewport{
+			0.0f,
+			0.0f,
+			static_cast<float>(backBuffer->GetDesc().width),
+			static_cast<float>(backBuffer->GetDesc().height),
+			0.0f,
+			1.0f
+		});
+		commandList.SetScissor(RHI::Rect{ 0, 0, backBuffer->GetDesc().width, backBuffer->GetDesc().height });
+		return true;
+	}
+
+	void EndMainRendering(RHI::ICommandList& commandList, RHI::TextureHandle backBuffer)
+	{
+		commandList.EndRendering();
+		const RHI::ResourceBarrierDesc barrier = {
+			nullptr,
+			backBuffer,
+			RHI::ResourceState::RenderTarget,
+			RHI::ResourceState::Present,
+			{}
+		};
+		commandList.ResourceBarrier(&barrier, 1);
 	}
 
 	void AddPendingBatchInstance(
@@ -175,8 +491,7 @@ namespace
 	{
 		for(PendingDrawBatch& batch : batches)
 		{
-			if(batch.meshIndex == meshIndex &&
-				batch.materialIndex == materialIndex &&
+			if(batch.meshIndex == meshIndex && batch.materialIndex == materialIndex &&
 				batch.textureFlags == textureFlags)
 			{
 				batch.instances.push_back(InstanceTransform{ transform.worldMatrix });
@@ -192,27 +507,6 @@ namespace
 		batches.push_back(std::move(batch));
 	}
 
-	void FlushPendingBatches(
-		const std::vector<PendingDrawBatch>& pendingBatches,
-		std::vector<DrawBatch>& drawBatches,
-		std::vector<InstanceTransform>& instances)
-	{
-		drawBatches.clear();
-		for(const PendingDrawBatch& pending : pendingBatches)
-		{
-			if(pending.instances.empty()) continue;
-
-			DrawBatch batch = {};
-			batch.meshIndex = pending.meshIndex;
-			batch.materialIndex = pending.materialIndex;
-			batch.textureFlags = pending.textureFlags;
-			batch.firstInstance = static_cast<uint32_t>(instances.size());
-			batch.instanceCount = static_cast<uint32_t>(pending.instances.size());
-			drawBatches.push_back(batch);
-			instances.insert(instances.end(), pending.instances.begin(), pending.instances.end());
-		}
-	}
-
 	void BuildMainDrawBatches(
 		const Scene& scene,
 		const RenderPathContext& context,
@@ -224,10 +518,9 @@ namespace
 		instances.clear();
 		if(context.materialStates == nullptr) return;
 
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-		std::vector<PendingDrawBatch> pendingBatches;
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		const std::vector<SceneMaterialState>& materials = *context.materialStates;
+		std::vector<PendingDrawBatch> pending;
+		for(uint32_t entityIndex = 0; entityIndex < scene.GetEntityCount(); ++entityIndex)
 		{
 			const EntityID entity = static_cast<EntityID>(entityIndex);
 			const MeshID meshId = scene.GetEntityMesh(entity);
@@ -235,217 +528,170 @@ namespace
 			if(!IsValid(meshId) || !IsValid(materialId)) continue;
 
 			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= meshRanges.size() || meshRanges[meshIndex].indexCount == 0u) continue;
-
 			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
+			if(meshIndex >= meshRanges.size() || meshRanges[meshIndex].indexCount == 0 ||
+				materialIndex >= materials.size()) continue;
 
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialStates[materialIndex], renderFlags);
-			AddPendingBatchInstance(pendingBatches, meshIndex, materialIndex, textureFlags, scene.GetTransform(entity));
+			AddPendingBatchInstance(
+				pending,
+				meshIndex,
+				materialIndex,
+				ComputeTextureFlags(materials[materialIndex], scene.GetRenderFlags(entity)),
+				scene.GetTransform(entity));
 		}
 
-		FlushPendingBatches(pendingBatches, drawBatches, instances);
-	}
-
-	bool UploadInstanceTransforms(
-		RHI::IDevice* device,
-		RHI::IBuffer*& instanceBuffer,
-		uint32_t& instanceBufferBytes,
-		const std::vector<InstanceTransform>& instances)
-	{
-		const uint32_t bytes = static_cast<uint32_t>(instances.size() * sizeof(InstanceTransform));
-		if(bytes == 0u) return false;
-		if(!EnsureBuffer(device, instanceBuffer, instanceBufferBytes, bytes, static_cast<uint32_t>(sizeof(InstanceTransform)), RHI::BufferUsage::Storage))
+		for(const PendingDrawBatch& source : pending)
 		{
-			return false;
-		}
-		UploadBuffer(instanceBuffer, instances.data(), bytes);
-		return true;
-	}
-
-	[[nodiscard]] bool ShouldRecordShadow(const RenderPathContext& ctx)
-	{
-		return ctx.shadowPipeline != nullptr && ctx.shadowDepth != nullptr;
-	}
-
-	[[nodiscard]] uint32_t ComputeTextureFlags(const SceneMaterialState& materialState, const RenderFlags& renderFlags)
-	{
-		uint32_t textureFlags = materialState.textureFlags;
-		if(renderFlags.receiveShadow) textureFlags |= Layout::kReceiveShadowFlag;
-		if(renderFlags.castShadow) textureFlags |= Layout::kCastShadowFlag;
-		return textureFlags;
-	}
-
-	[[nodiscard]] Layout::DrawConstants MakeDrawConstants(
-		const RendererDesc& config,
-		const MaterialDesc& material,
-		const SceneMaterialState& materialState,
-		const Transform& transform,
-		uint32_t textureFlags,
-		uint32_t firstIndex,
-		int32_t vertexOffset)
-	{
-		// bindless 디스크립터 인덱스를 float 로 변환(INVALID 은 0; 해당 텍스처 flag 가 꺼져 샘플 안 됨).
-		const auto texIndex = [&](uint32_t slot) -> float {
-			const uint32_t index = materialState.textureDescriptorIndices[slot];
-			return index == kInvalidDescriptorIndex ? 0.0f : static_cast<float>(index);
-		};
-
-		Layout::DrawConstants drawConstants = {};
-		drawConstants.viewProjectionMatrix = config.viewProjectionMatrix;
-		drawConstants.modelMatrix = transform.worldMatrix;
-		drawConstants.drawMode = static_cast<float>(textureFlags);
-		drawConstants.firstIndex = firstIndex;
-		drawConstants.vertexOffset = vertexOffset;
-		drawConstants.emissiveColor = Math::float4(
-			material.emissiveColor.x,
-			material.emissiveColor.y,
-			material.emissiveColor.z,
-			texIndex(kMaterialEmissiveTextureSlot));
-		drawConstants.baseColor = material.baseColor;
-		drawConstants.materialParams = Math::float4(material.metallicFactor, material.roughnessFactor, material.normalScale, material.occlusionStrength);
-		drawConstants.textureIndices = Math::float4(
-			texIndex(kMaterialBaseColorTextureSlot),
-			texIndex(kMaterialMetallicRoughnessTextureSlot),
-			texIndex(kMaterialNormalTextureSlot),
-			texIndex(kMaterialOcclusionTextureSlot));
-		return drawConstants;
-	}
-
-	// 깊이 전용(그림자) 패스 시작: 컬러 RT 없이 그림자 깊이타겟만 바인딩하고 파이프라인/행렬 세팅.
-	// 뷰포트는 백엔드 SetRenderTargets 가 깊이타겟 해상도로 맞춘다.
-	void BeginShadowPass(RHI::ICommandList* commandList, const RenderPathContext& ctx)
-	{
-		commandList->BindGraphicsPipeline(ctx.shadowPipeline);
-		commandList->SetRenderTargets(0, nullptr, ctx.shadowDepth);
-		commandList->ClearDepth(ctx.shadowDepth, 1.0f);
-		commandList->BindGlobalDescriptors();
-		if(ctx.shadowMatrixBuffer != nullptr)
-		{
-			commandList->BindConstantBuffer(Layout::kShadowMatrixBinding, ctx.shadowMatrixBuffer, 0, static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)));
+			if(source.instances.empty()) continue;
+			DrawBatch batch = {};
+			batch.meshIndex = source.meshIndex;
+			batch.materialIndex = source.materialIndex;
+			batch.textureFlags = source.textureFlags;
+			batch.firstInstance = static_cast<uint32_t>(instances.size());
+			batch.instanceCount = static_cast<uint32_t>(source.instances.size());
+			drawBatches.push_back(batch);
+			instances.insert(instances.end(), source.instances.begin(), source.instances.end());
 		}
 	}
 
-	// 메인 포워드 패스 시작: 이미 획득한 커맨드 리스트에 백버퍼/깊이/파이프라인/상수버퍼를 바인딩.
-	// 그림자 깊이타겟이 있으면 SRV 로 바인딩한다(백엔드가 DEPTH_WRITE→PIXEL_SHADER_RESOURCE 전환).
-	[[nodiscard]] bool BeginMainPassOn(RHI::ICommandList* commandList, RHI::ITexture* backBuffer, const RenderPathContext& ctx)
-	{
-		if(commandList == nullptr || backBuffer == nullptr || ctx.pipeline == nullptr) return false;
-
-		const RendererDesc& config = *ctx.config;
-		commandList->SetRenderTargets(1, &backBuffer, ctx.depthStencil);
-		commandList->ClearColor(backBuffer, config.clearColor.x, config.clearColor.y, config.clearColor.z, config.clearColor.w);
-		if(ctx.depthStencil != nullptr)
-		{
-			commandList->ClearDepth(ctx.depthStencil, 1.0f);
-		}
-		commandList->BindGraphicsPipeline(ctx.pipeline);
-		commandList->BindGlobalDescriptors();
-		if(ctx.lightingBuffer != nullptr)
-		{
-			commandList->BindConstantBuffer(Layout::kLightingConstantBinding, ctx.lightingBuffer, 0, static_cast<uint32_t>(sizeof(Layout::RendererLightingConstants)));
-		}
-		if(ctx.shadowMatrixBuffer != nullptr)
-		{
-			commandList->BindConstantBuffer(Layout::kShadowMatrixBinding, ctx.shadowMatrixBuffer, 0, static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)));
-		}
-		if(ctx.shadowDepth != nullptr)
-		{
-			commandList->BindTexture(Layout::kShadowSamplerBinding, ctx.shadowDepth);
-		}
-		return true;
-	}
-
-	void SubmitMainPass(RHI::IDevice* device, RHI::ICommandList* commandList)
-	{
-		commandList->Close();
-		std::array<RHI::ICommandList*, 1> commandLists = { commandList };
-		(void)device->Submit(commandLists.data(), static_cast<uint32_t>(commandLists.size()));
-	}
-
-	void BindMaterialTextures(RHI::ICommandList* commandList, const SceneMaterialState& materialState)
-	{
-		commandList->BindTexture(Layout::kBaseColorTextureBinding, materialState.textures[kMaterialBaseColorTextureSlot]);
-		commandList->BindTexture(Layout::kMetallicRoughnessSamplerBinding, materialState.textures[kMaterialMetallicRoughnessTextureSlot]);
-		commandList->BindTexture(Layout::kNormalSamplerBinding, materialState.textures[kMaterialNormalTextureSlot]);
-		commandList->BindTexture(Layout::kOcclusionSamplerBinding, materialState.textures[kMaterialOcclusionTextureSlot]);
-		commandList->BindTexture(Layout::kEmissiveSamplerBinding, materialState.textures[kMaterialEmissiveTextureSlot]);
-	}
-
-	// ===== ??Per-draw bind ============================================================
 	class PerDrawBindPath final : public IRenderPath
 	{
 	public:
-		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
+		[[nodiscard]] bool PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&) override;
+		[[nodiscard]] bool RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void Shutdown(RHI::IDevice* device) override;
 
 	private:
 		struct SceneMeshState
 		{
-			RHI::IBuffer* vertexBuffer = nullptr;
-			RHI::IBuffer* indexBuffer = nullptr;
+			RHI::BufferHandle vertexBuffer = nullptr;
+			RHI::BufferHandle indexBuffer = nullptr;
 			uint32_t vertexBytes = 0;
 			uint32_t indexBytes = 0;
 			uint32_t indexCount = 0;
+			bool vertexReady = false;
+			bool indexReady = false;
 		};
 
-		void DestroyMeshState(RHI::IDevice* device, SceneMeshState& meshState);
-		void RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context);
+		void DestroyMeshState(RHI::IDevice* device, SceneMeshState& mesh);
+		[[nodiscard]] bool RecordShadowDraws(
+			RHI::ICommandList& commandList,
+			const Scene& scene,
+			const RenderPathContext& context);
 
-		std::vector<SceneMeshState> m_meshStates;
-		RHI::IBuffer* m_instanceBuffer = nullptr;
-		uint32_t m_instanceBufferBytes = 0;
-		std::vector<InstanceTransform> m_instances;
+		std::vector<SceneMeshState> m_meshes;
+		RHI::BufferHandle m_instanceBuffer = nullptr;
+		uint32_t m_instanceBytes = 0;
+		bool m_instanceReady = false;
+		std::vector<RHI::ResourceSetHandle> m_materialResourceSets;
+		RHI::ResourceSetHandle m_shadowResourceSet = nullptr;
 	};
 
-	void PerDrawBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
+	void PerDrawBindPath::DestroyMeshState(RHI::IDevice* device, SceneMeshState& mesh)
 	{
-		const uint32_t meshCount = scene.GetMeshCount();
-		if(m_meshStates.size() < meshCount) m_meshStates.resize(meshCount);
-
-		for(uint32_t meshIndex = 0; meshIndex < meshCount; ++meshIndex)
-		{
-			const MeshData& mesh = scene.GetMesh(static_cast<MeshID>(meshIndex));
-			if(mesh.vertices.empty()) continue;
-
-			std::vector<RendererVertex> vertices = BuildRendererVertices(mesh);
-			std::vector<uint32_t> indices = BuildRendererIndices(mesh);
-			if(indices.empty()) continue;
-
-			SceneMeshState& meshState = m_meshStates[meshIndex];
-			const uint32_t vertexBytes = static_cast<uint32_t>(vertices.size() * sizeof(RendererVertex));
-			const uint32_t indexBytes = static_cast<uint32_t>(indices.size() * sizeof(uint32_t));
-
-			if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr ||
-				meshState.vertexBytes != vertexBytes || meshState.indexBytes != indexBytes)
-			{
-				DestroyMeshState(device, meshState);
-				const RHI::BufferUsage vertexUsage = RHI::BufferUsage::Vertex | RHI::BufferUsage::Storage;
-				const RHI::BufferUsage indexUsage = RHI::BufferUsage::Index | RHI::BufferUsage::Storage;
-				meshState.vertexBuffer = device->CreateBuffer(RHI::BufferDesc{ vertexBytes, static_cast<uint32_t>(sizeof(RendererVertex)), vertexUsage });
-				meshState.indexBuffer = device->CreateBuffer(RHI::BufferDesc{ indexBytes, static_cast<uint32_t>(sizeof(uint32_t)), indexUsage });
-				meshState.vertexBytes = vertexBytes;
-				meshState.indexBytes = indexBytes;
-			}
-			if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr) continue;
-
-			UploadBuffer(meshState.vertexBuffer, vertices.data(), vertexBytes);
-			UploadBuffer(meshState.indexBuffer, indices.data(), indexBytes);
-			meshState.indexCount = static_cast<uint32_t>(indices.size());
-		}
+		DestroyBuffer(device, mesh.vertexBuffer, mesh.vertexBytes, mesh.vertexReady);
+		DestroyBuffer(device, mesh.indexBuffer, mesh.indexBytes, mesh.indexReady);
+		mesh.indexCount = 0;
 	}
 
-	void PerDrawBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
+	bool PerDrawBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
-		BeginShadowPass(commandList, context);
+		if(device == nullptr) return false;
 
-		const RendererDesc& config = *context.config;
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
+		while(m_meshes.size() > scene.GetMeshCount())
+		{
+			DestroyMeshState(device, m_meshes.back());
+			m_meshes.pop_back();
+		}
+		m_meshes.resize(scene.GetMeshCount());
 
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		RHI::ICommandList* commandList = device->AcquireCommandList();
+		if(commandList == nullptr) return false;
+		bool uploadFailed = false;
+		std::vector<bool*> uploaded;
+		for(uint32_t meshIndex = 0; meshIndex < scene.GetMeshCount(); ++meshIndex)
+		{
+			const MeshData& source = scene.GetMesh(static_cast<MeshID>(meshIndex));
+			if(source.vertices.size() > std::numeric_limits<uint32_t>::max() / sizeof(RendererVertex) ||
+				(!source.indices.empty() &&
+					source.indices.size() > std::numeric_limits<uint32_t>::max() / sizeof(uint32_t)))
+			{
+				uploadFailed = true;
+				break;
+			}
+			std::vector<RendererVertex> vertices = BuildRendererVertices(source);
+			std::vector<uint32_t> indices = BuildRendererIndices(source);
+			SceneMeshState& mesh = m_meshes[meshIndex];
+			if(vertices.empty() || indices.empty())
+			{
+				DestroyMeshState(device, mesh);
+				continue;
+			}
+
+			const uint32_t vertexBytes = static_cast<uint32_t>(vertices.size() * sizeof(RendererVertex));
+			const uint32_t indexBytes = static_cast<uint32_t>(indices.size() * sizeof(uint32_t));
+			if(!EnsureBuffer(
+					device, mesh.vertexBuffer, mesh.vertexBytes, mesh.vertexReady,
+					vertexBytes, static_cast<uint32_t>(sizeof(RendererVertex)), RHI::BufferUsage::Vertex) ||
+				!EnsureBuffer(
+					device, mesh.indexBuffer, mesh.indexBytes, mesh.indexReady,
+					indexBytes, static_cast<uint32_t>(sizeof(uint32_t)), RHI::BufferUsage::Index))
+			{
+				uploadFailed = true;
+				break;
+			}
+			if(!RecordBufferUpload(
+					device, *commandList, mesh.vertexBuffer, vertices.data(), vertexBytes,
+					mesh.vertexReady, RHI::ResourceState::VertexBuffer))
+			{
+				uploadFailed = true;
+				break;
+			}
+			uploaded.push_back(&mesh.vertexReady);
+			if(!RecordBufferUpload(
+					device, *commandList, mesh.indexBuffer, indices.data(), indexBytes,
+					mesh.indexReady, RHI::ResourceState::IndexBuffer))
+			{
+				uploadFailed = true;
+				break;
+			}
+			uploaded.push_back(&mesh.indexReady);
+			mesh.indexCount = static_cast<uint32_t>(indices.size());
+		}
+
+		const InstanceTransform identity = {};
+		if(!uploadFailed)
+		{
+			if(!EnsureBuffer(
+					device, m_instanceBuffer, m_instanceBytes, m_instanceReady,
+					static_cast<uint32_t>(sizeof(identity)), static_cast<uint32_t>(sizeof(identity)),
+					RHI::BufferUsage::Storage) ||
+				!RecordBufferUpload(
+					device, *commandList, m_instanceBuffer, &identity, static_cast<uint32_t>(sizeof(identity)),
+					m_instanceReady, RHI::ResourceState::ShaderResource)) uploadFailed = true;
+			else uploaded.push_back(&m_instanceReady);
+		}
+
+		commandList->Close();
+		std::array<RHI::ICommandList*, 1> commands = { commandList };
+		const bool submitted = device->Submit(commands.data(), 1);
+		if(submitted)
+		{
+			for(bool* ready : uploaded) *ready = true;
+		}
+		return submitted && !uploadFailed;
+	}
+
+	bool PerDrawBindPath::RecordShadowDraws(
+		RHI::ICommandList& commandList,
+		const Scene& scene,
+		const RenderPathContext& context)
+	{
+		if(context.config == nullptr || context.materialStates == nullptr ||
+			!BeginShadowRendering(commandList, context, m_shadowResourceSet)) return false;
+
+		const std::vector<SceneMaterialState>& materials = *context.materialStates;
+		for(uint32_t entityIndex = 0; entityIndex < scene.GetEntityCount(); ++entityIndex)
 		{
 			const EntityID entity = static_cast<EntityID>(entityIndex);
 			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
@@ -454,156 +700,196 @@ namespace
 			const MeshID meshId = scene.GetEntityMesh(entity);
 			const MaterialID materialId = scene.GetEntityMaterial(entity);
 			if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
 			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshStates.size()) continue;
-			const SceneMeshState& meshState = m_meshStates[meshIndex];
-			if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr || meshState.indexCount == 0u) continue;
-
 			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
+			if(meshIndex >= m_meshes.size() || materialIndex >= materials.size()) continue;
 
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-
-			RHI::GeometryBinding geometry = {};
-			geometry.vertexBuffer = meshState.vertexBuffer;
-			geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-			geometry.indexBuffer = meshState.indexBuffer;
-			geometry.indexFormat = RHI::Format::R32_UINT;
-			commandList->BindGeometry(geometry);
-
-			Layout::DrawConstants drawConstants = MakeDrawConstants(config, material, materialState, transform, textureFlags, 0, 0);
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
+			const SceneMeshState& mesh = m_meshes[meshIndex];
+			if(mesh.vertexBuffer == nullptr || mesh.indexBuffer == nullptr || mesh.indexCount == 0) continue;
+			commandList.BindVertexBuffer(0, mesh.vertexBuffer, 0);
+			commandList.BindIndexBuffer(mesh.indexBuffer, RHI::Format::R32_UINT, 0);
+			const Layout::DrawConstants constants = MakeDrawConstants(
+				*context.config,
+				scene.GetMaterial(materialId),
+				scene.GetTransform(entity),
+				ComputeTextureFlags(materials[materialIndex], renderFlags),
+				0);
+			commandList.SetInlineConstants(0, static_cast<uint32_t>(sizeof(constants)), &constants);
+			commandList.DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
 		}
+		EndShadowRendering(commandList, context.shadowDepth);
+		return true;
 	}
 
-	void PerDrawBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
+	bool PerDrawBindPath::RecordMainPass(
+		const Scene& scene,
+		RHI::IDevice* device,
+		const RenderPathContext& context)
 	{
+		if(device == nullptr || context.config == nullptr || context.materialStates == nullptr ||
+			context.pipeline == nullptr || m_instanceBuffer == nullptr) return false;
+		if(!EnsureMaterialResourceSets(device, context, m_instanceBuffer, m_materialResourceSets)) return false;
+
+		const bool recordShadow = ShouldRecordShadow(context);
+		if(recordShadow && !EnsureShadowResourceSet(
+				device, context, m_instanceBuffer, m_shadowResourceSet)) return false;
+
+		RHI::TextureHandle backBuffer = device->GetBackBuffer();
+		if(backBuffer == nullptr) return false;
 		RHI::ICommandList* commandList = device->AcquireCommandList();
-		RHI::ITexture* backBuffer = device->GetBackBuffer();
-		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
+		if(commandList == nullptr) return false;
+		const bool shadowRecorded = !recordShadow || RecordShadowDraws(*commandList, scene, context);
+		const bool mainBegan = shadowRecorded &&
+			BeginMainRendering(*commandList, backBuffer, context, recordShadow);
 
-		if(ShouldRecordShadow(context))
+		if(mainBegan)
 		{
-			RecordShadowDraws(commandList, scene, context);
-		}
-
-		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
-
-		const RendererDesc& config = *context.config;
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-		m_instances.assign(1, InstanceTransform{ Math::float4x4::Identity() });
-		if(UploadInstanceTransforms(device, m_instanceBuffer, m_instanceBufferBytes, m_instances))
-		{
-			commandList->BindStorageBuffer(Layout::kBindlessTransformStorageBinding, m_instanceBuffer, 0, m_instanceBufferBytes);
-		}
-
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
-		{
-			const EntityID entity = static_cast<EntityID>(entityIndex);
-			const MeshID meshId = scene.GetEntityMesh(entity);
-			const MaterialID materialId = scene.GetEntityMaterial(entity);
-			if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
-			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshStates.size()) continue;
-			const SceneMeshState& meshState = m_meshStates[meshIndex];
-			if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr || meshState.indexCount == 0u) continue;
-
-			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
-
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-
-			RHI::GeometryBinding geometry = {};
-			geometry.vertexBuffer = meshState.vertexBuffer;
-			geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-			geometry.indexBuffer = meshState.indexBuffer;
-			geometry.indexFormat = RHI::Format::R32_UINT;
-			commandList->BindGeometry(geometry);
-			if(!config.enableBindlessTextures)
+			const std::vector<SceneMaterialState>& materials = *context.materialStates;
+			for(uint32_t entityIndex = 0; entityIndex < scene.GetEntityCount(); ++entityIndex)
 			{
-				BindMaterialTextures(commandList, materialState);
+				const EntityID entity = static_cast<EntityID>(entityIndex);
+				const MeshID meshId = scene.GetEntityMesh(entity);
+				const MaterialID materialId = scene.GetEntityMaterial(entity);
+				if(!IsValid(meshId) || !IsValid(materialId)) continue;
+
+				const uint32_t meshIndex = ToIndex(meshId);
+				const uint32_t materialIndex = ToIndex(materialId);
+				if(meshIndex >= m_meshes.size() || materialIndex >= materials.size() ||
+					materialIndex >= m_materialResourceSets.size()) continue;
+				const SceneMeshState& mesh = m_meshes[meshIndex];
+				if(mesh.vertexBuffer == nullptr || mesh.indexBuffer == nullptr || mesh.indexCount == 0) continue;
+
+				commandList->BindResourceSet(m_materialResourceSets[materialIndex]);
+				commandList->BindVertexBuffer(0, mesh.vertexBuffer, 0);
+				commandList->BindIndexBuffer(mesh.indexBuffer, RHI::Format::R32_UINT, 0);
+				const Layout::DrawConstants constants = MakeDrawConstants(
+					*context.config,
+					scene.GetMaterial(materialId),
+					scene.GetTransform(entity),
+					ComputeTextureFlags(materials[materialIndex], scene.GetRenderFlags(entity)),
+					0);
+				commandList->SetInlineConstants(0, static_cast<uint32_t>(sizeof(constants)), &constants);
+				commandList->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
 			}
 
-			Layout::DrawConstants drawConstants = MakeDrawConstants(config, material, materialState, transform, textureFlags, 0, 0);
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
+			EndMainRendering(*commandList, backBuffer);
 		}
-
-		SubmitMainPass(device, commandList);
-	}
-
-	void PerDrawBindPath::DestroyMeshState(RHI::IDevice* device, SceneMeshState& meshState)
-	{
-		if(meshState.vertexBuffer != nullptr) { device->DestroyBuffer(meshState.vertexBuffer); meshState.vertexBuffer = nullptr; }
-		if(meshState.indexBuffer != nullptr) { device->DestroyBuffer(meshState.indexBuffer); meshState.indexBuffer = nullptr; }
-		meshState.vertexBytes = 0;
-		meshState.indexBytes = 0;
-		meshState.indexCount = 0;
+		commandList->Close();
+		std::array<RHI::ICommandList*, 1> commands = { commandList };
+		return device->Submit(commands.data(), 1) && mainBegan;
 	}
 
 	void PerDrawBindPath::Shutdown(RHI::IDevice* device)
 	{
 		if(device == nullptr) return;
-		for(SceneMeshState& meshState : m_meshStates) DestroyMeshState(device, meshState);
-		m_meshStates.clear();
-		DestroyBuffer(device, m_instanceBuffer, m_instanceBufferBytes);
-		m_instances.clear();
+		DestroyResourceSets(device, m_materialResourceSets);
+		if(m_shadowResourceSet != nullptr) device->DestroyResourceSet(m_shadowResourceSet);
+		m_shadowResourceSet = nullptr;
+		for(SceneMeshState& mesh : m_meshes) DestroyMeshState(device, mesh);
+		m_meshes.clear();
+		DestroyBuffer(device, m_instanceBuffer, m_instanceBytes, m_instanceReady);
 	}
 
-	// ===== ??Batched bind =============================================================
-	class BatchedBindPath final : public IRenderPath
+	class BatchedBindPath : public IRenderPath
 	{
 	public:
-		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
+		[[nodiscard]] bool PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&) override;
+		[[nodiscard]] bool RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void Shutdown(RHI::IDevice* device) override;
 
 	private:
-		void RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context);
+		[[nodiscard]] bool RecordShadowDraws(
+			RHI::ICommandList& commandList,
+			const Scene& scene,
+			const RenderPathContext& context);
 
-		RHI::IBuffer* m_vertexBuffer = nullptr;
-		RHI::IBuffer* m_indexBuffer = nullptr;
-		RHI::IBuffer* m_instanceBuffer = nullptr;
-		uint32_t m_vertexBufferBytes = 0;
-		uint32_t m_indexBufferBytes = 0;
-		uint32_t m_instanceBufferBytes = 0;
+		RHI::BufferHandle m_vertexBuffer = nullptr;
+		RHI::BufferHandle m_indexBuffer = nullptr;
+		RHI::BufferHandle m_instanceBuffer = nullptr;
+		uint32_t m_vertexBytes = 0;
+		uint32_t m_indexBytes = 0;
+		uint32_t m_instanceBytes = 0;
+		bool m_vertexReady = false;
+		bool m_indexReady = false;
+		bool m_instanceReady = false;
 		std::vector<MeshRange> m_meshRanges;
 		std::vector<DrawBatch> m_drawBatches;
 		std::vector<InstanceTransform> m_instances;
+		std::vector<RHI::ResourceSetHandle> m_materialResourceSets;
+		RHI::ResourceSetHandle m_shadowResourceSet = nullptr;
 	};
 
-	void BatchedBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
+	bool BatchedBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
-		BuildBatchedGeometry(scene, device, m_vertexBuffer, m_vertexBufferBytes, m_indexBuffer, m_indexBufferBytes, m_meshRanges);
+		if(device == nullptr) return false;
+
+		std::vector<RendererVertex> vertices;
+		std::vector<uint32_t> indices;
+		m_meshRanges.assign(scene.GetMeshCount(), {});
+		for(uint32_t meshIndex = 0; meshIndex < scene.GetMeshCount(); ++meshIndex)
+		{
+			const MeshData& source = scene.GetMesh(static_cast<MeshID>(meshIndex));
+			if(source.vertices.size() > std::numeric_limits<uint32_t>::max() / sizeof(RendererVertex) ||
+				(!source.indices.empty() &&
+					source.indices.size() > std::numeric_limits<uint32_t>::max() / sizeof(uint32_t))) return false;
+			std::vector<RendererVertex> meshVertices = BuildRendererVertices(source);
+			std::vector<uint32_t> meshIndices = BuildRendererIndices(source);
+			if(meshVertices.empty() || meshIndices.empty()) continue;
+			if(meshVertices.size() > std::numeric_limits<uint32_t>::max() / sizeof(RendererVertex) ||
+				meshIndices.size() > std::numeric_limits<uint32_t>::max() / sizeof(uint32_t) ||
+				vertices.size() > std::numeric_limits<uint32_t>::max() / sizeof(RendererVertex) - meshVertices.size() ||
+				indices.size() > std::numeric_limits<uint32_t>::max() / sizeof(uint32_t) - meshIndices.size()) return false;
+
+			MeshRange& range = m_meshRanges[meshIndex];
+			range.firstVertex = static_cast<uint32_t>(vertices.size());
+			range.firstIndex = static_cast<uint32_t>(indices.size());
+			range.indexCount = static_cast<uint32_t>(meshIndices.size());
+			vertices.insert(vertices.end(), meshVertices.begin(), meshVertices.end());
+			indices.insert(indices.end(), meshIndices.begin(), meshIndices.end());
+		}
+
+		const uint32_t vertexBytes = static_cast<uint32_t>(vertices.size() * sizeof(RendererVertex));
+		const uint32_t indexBytes = static_cast<uint32_t>(indices.size() * sizeof(uint32_t));
+		if(!EnsureBuffer(
+				device, m_vertexBuffer, m_vertexBytes, m_vertexReady,
+				vertexBytes, static_cast<uint32_t>(sizeof(RendererVertex)), RHI::BufferUsage::Vertex) ||
+			!EnsureBuffer(
+				device, m_indexBuffer, m_indexBytes, m_indexReady,
+				indexBytes, static_cast<uint32_t>(sizeof(uint32_t)), RHI::BufferUsage::Index)) return false;
+		if(vertexBytes == 0 || indexBytes == 0) return true;
+
+		RHI::ICommandList* commandList = device->AcquireCommandList();
+		if(commandList == nullptr) return false;
+		const bool vertexUploaded = RecordBufferUpload(
+			device, *commandList, m_vertexBuffer, vertices.data(), vertexBytes,
+			m_vertexReady, RHI::ResourceState::VertexBuffer);
+		const bool indexUploaded = vertexUploaded && RecordBufferUpload(
+			device, *commandList, m_indexBuffer, indices.data(), indexBytes,
+			m_indexReady, RHI::ResourceState::IndexBuffer);
+
+		commandList->Close();
+		std::array<RHI::ICommandList*, 1> commands = { commandList };
+		const bool submitted = device->Submit(commands.data(), 1);
+		if(submitted)
+		{
+			if(vertexUploaded) m_vertexReady = true;
+			if(indexUploaded) m_indexReady = true;
+		}
+		return submitted && vertexUploaded && indexUploaded;
 	}
 
-	void BatchedBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
+	bool BatchedBindPath::RecordShadowDraws(
+		RHI::ICommandList& commandList,
+		const Scene& scene,
+		const RenderPathContext& context)
 	{
-		BeginShadowPass(commandList, context);
+		if(context.config == nullptr || context.materialStates == nullptr ||
+			!BeginShadowRendering(commandList, context, m_shadowResourceSet)) return false;
+		commandList.BindVertexBuffer(0, m_vertexBuffer, 0);
+		commandList.BindIndexBuffer(m_indexBuffer, RHI::Format::R32_UINT, 0);
 
-		const RendererDesc& config = *context.config;
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
-
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		const std::vector<SceneMaterialState>& materials = *context.materialStates;
+		for(uint32_t entityIndex = 0; entityIndex < scene.GetEntityCount(); ++entityIndex)
 		{
 			const EntityID entity = static_cast<EntityID>(entityIndex);
 			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
@@ -612,220 +898,121 @@ namespace
 			const MeshID meshId = scene.GetEntityMesh(entity);
 			const MaterialID materialId = scene.GetEntityMaterial(entity);
 			if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
 			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshRanges.size()) continue;
-			const MeshRange& range = m_meshRanges[meshIndex];
-			if(range.indexCount == 0u) continue;
-
 			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
+			if(meshIndex >= m_meshRanges.size() || materialIndex >= materials.size()) continue;
+			const MeshRange& range = m_meshRanges[meshIndex];
+			if(range.indexCount == 0) continue;
 
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-
-			Layout::DrawConstants drawConstants = MakeDrawConstants(
-				config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+			const Layout::DrawConstants constants = MakeDrawConstants(
+				*context.config,
+				scene.GetMaterial(materialId),
+				scene.GetTransform(entity),
+				ComputeTextureFlags(materials[materialIndex], renderFlags),
+				0);
+			commandList.SetInlineConstants(0, static_cast<uint32_t>(sizeof(constants)), &constants);
+			commandList.DrawIndexedInstanced(
+				range.indexCount,
+				1,
+				range.firstIndex,
+				static_cast<int32_t>(range.firstVertex),
+				0);
 		}
+		EndShadowRendering(commandList, context.shadowDepth);
+		return true;
 	}
 
-	void BatchedBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
+	bool BatchedBindPath::RecordMainPass(
+		const Scene& scene,
+		RHI::IDevice* device,
+		const RenderPathContext& context)
 	{
-		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
-
-		RHI::ICommandList* commandList = device->AcquireCommandList();
-		RHI::ITexture* backBuffer = device->GetBackBuffer();
-		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
-
-		if(ShouldRecordShadow(context))
-		{
-			RecordShadowDraws(commandList, scene, context);
-		}
-
-		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
+		if(device == nullptr || context.config == nullptr || context.materialStates == nullptr ||
+			context.pipeline == nullptr) return false;
 
 		BuildMainDrawBatches(scene, context, m_meshRanges, m_drawBatches, m_instances);
-		if(UploadInstanceTransforms(device, m_instanceBuffer, m_instanceBufferBytes, m_instances))
+		const bool hasDraws = !m_drawBatches.empty();
+		uint32_t instanceBytes = 0;
+		if(hasDraws)
 		{
-			commandList->BindStorageBuffer(Layout::kBindlessTransformStorageBinding, m_instanceBuffer, 0, m_instanceBufferBytes);
-			const RendererDesc& config = *context.config;
-			const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
+			if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr) return false;
+			if(m_instances.size() > std::numeric_limits<uint32_t>::max() / sizeof(InstanceTransform)) return false;
+			instanceBytes = static_cast<uint32_t>(m_instances.size() * sizeof(InstanceTransform));
+			if(!EnsureBuffer(
+					device, m_instanceBuffer, m_instanceBytes, m_instanceReady,
+					instanceBytes, static_cast<uint32_t>(sizeof(InstanceTransform)), RHI::BufferUsage::Storage) ||
+				!EnsureMaterialResourceSets(device, context, m_instanceBuffer, m_materialResourceSets)) return false;
+		}
+		const bool recordShadow = hasDraws && ShouldRecordShadow(context);
+		if(recordShadow && !EnsureShadowResourceSet(
+				device, context, m_instanceBuffer, m_shadowResourceSet)) return false;
+
+		RHI::TextureHandle backBuffer = device->GetBackBuffer();
+		if(backBuffer == nullptr) return false;
+		RHI::ICommandList* commandList = device->AcquireCommandList();
+		if(commandList == nullptr) return false;
+		const bool instanceUploaded = !hasDraws || RecordBufferUpload(
+			device, *commandList, m_instanceBuffer, m_instances.data(), instanceBytes,
+			m_instanceReady, RHI::ResourceState::ShaderResource);
+		const bool shadowRecorded = instanceUploaded &&
+			(!recordShadow || RecordShadowDraws(*commandList, scene, context));
+		const bool mainBegan = shadowRecorded &&
+			BeginMainRendering(*commandList, backBuffer, context, recordShadow);
+		if(mainBegan)
+		{
+			if(hasDraws)
+			{
+				commandList->BindVertexBuffer(0, m_vertexBuffer, 0);
+				commandList->BindIndexBuffer(m_indexBuffer, RHI::Format::R32_UINT, 0);
+			}
+
+			const std::vector<SceneMaterialState>& materials = *context.materialStates;
 			for(const DrawBatch& batch : m_drawBatches)
 			{
-				if(batch.meshIndex >= m_meshRanges.size() || batch.materialIndex >= materialStates.size()) continue;
+				if(batch.meshIndex >= m_meshRanges.size() || batch.materialIndex >= materials.size() ||
+					batch.materialIndex >= m_materialResourceSets.size()) continue;
 				const MeshRange& range = m_meshRanges[batch.meshIndex];
-				if(range.indexCount == 0u || batch.instanceCount == 0u) continue;
+				if(range.indexCount == 0 || batch.instanceCount == 0) continue;
 
-				const MaterialDesc& material = scene.GetMaterial(static_cast<MaterialID>(batch.materialIndex));
-				const SceneMaterialState& materialState = materialStates[batch.materialIndex];
-				if(!config.enableBindlessTextures)
-				{
-					BindMaterialTextures(commandList, materialState);
-				}
-
-				Layout::DrawConstants drawConstants = MakeDrawConstants(
-					config, material, materialState, Transform{}, batch.textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-				drawConstants.firstVertex = batch.firstInstance + 1u;
-				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-				commandList->DrawIndexedInstanced(range.indexCount, batch.instanceCount, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+				commandList->BindResourceSet(m_materialResourceSets[batch.materialIndex]);
+				const Layout::DrawConstants constants = MakeDrawConstants(
+					*context.config,
+					scene.GetMaterial(static_cast<MaterialID>(batch.materialIndex)),
+					Transform{},
+					batch.textureFlags,
+					batch.firstInstance + 1);
+				commandList->SetInlineConstants(0, static_cast<uint32_t>(sizeof(constants)), &constants);
+				commandList->DrawIndexedInstanced(
+					range.indexCount,
+					batch.instanceCount,
+					range.firstIndex,
+					static_cast<int32_t>(range.firstVertex),
+					0);
 			}
-		}
 
-		SubmitMainPass(device, commandList);
+			EndMainRendering(*commandList, backBuffer);
+		}
+		commandList->Close();
+		std::array<RHI::ICommandList*, 1> commands = { commandList };
+		const bool submitted = device->Submit(commands.data(), 1);
+		if(submitted && hasDraws && instanceUploaded) m_instanceReady = true;
+		return submitted && mainBegan;
 	}
 
 	void BatchedBindPath::Shutdown(RHI::IDevice* device)
 	{
 		if(device == nullptr) return;
-		DestroyBuffer(device, m_vertexBuffer, m_vertexBufferBytes);
-		DestroyBuffer(device, m_indexBuffer, m_indexBufferBytes);
-		DestroyBuffer(device, m_instanceBuffer, m_instanceBufferBytes);
+		DestroyResourceSets(device, m_materialResourceSets);
+		if(m_shadowResourceSet != nullptr) device->DestroyResourceSet(m_shadowResourceSet);
+		m_shadowResourceSet = nullptr;
+		DestroyBuffer(device, m_vertexBuffer, m_vertexBytes, m_vertexReady);
+		DestroyBuffer(device, m_indexBuffer, m_indexBytes, m_indexReady);
+		DestroyBuffer(device, m_instanceBuffer, m_instanceBytes, m_instanceReady);
 		m_meshRanges.clear();
 		m_drawBatches.clear();
 		m_instances.clear();
 	}
 
-	// ===== Batched-geometry bindless ==================================================
-	class BindlessPath final : public IRenderPath
-	{
-	public:
-		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void Shutdown(RHI::IDevice* device) override;
-
-	private:
-		void RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context);
-
-		RHI::IBuffer* m_vertexBuffer = nullptr;
-		RHI::IBuffer* m_indexBuffer = nullptr;
-		RHI::IBuffer* m_instanceBuffer = nullptr;
-		uint32_t m_vertexBufferBytes = 0;
-		uint32_t m_indexBufferBytes = 0;
-		uint32_t m_instanceBufferBytes = 0;
-		std::vector<MeshRange> m_meshRanges;
-		std::vector<DrawBatch> m_drawBatches;
-		std::vector<InstanceTransform> m_instances;
-	};
-
-	void BindlessPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
-	{
-		(void)context;
-		BuildBatchedGeometry(scene, device, m_vertexBuffer, m_vertexBufferBytes, m_indexBuffer, m_indexBufferBytes, m_meshRanges);
-	}
-
-	void BindlessPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
-	{
-		BeginShadowPass(commandList, context);
-
-		const RendererDesc& config = *context.config;
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
-
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
-		{
-			const EntityID entity = static_cast<EntityID>(entityIndex);
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			if(!renderFlags.castShadow) continue;
-
-			const MeshID meshId = scene.GetEntityMesh(entity);
-			const MaterialID materialId = scene.GetEntityMaterial(entity);
-			if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
-			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshRanges.size()) continue;
-			const MeshRange& range = m_meshRanges[meshIndex];
-			if(range.indexCount == 0u) continue;
-
-			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
-
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-
-			Layout::DrawConstants drawConstants = MakeDrawConstants(
-				config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
-		}
-	}
-
-	void BindlessPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
-	{
-		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
-
-		RHI::ICommandList* commandList = device->AcquireCommandList();
-		RHI::ITexture* backBuffer = device->GetBackBuffer();
-		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
-
-		if(ShouldRecordShadow(context))
-		{
-			RecordShadowDraws(commandList, scene, context);
-		}
-
-		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
-
-		BuildMainDrawBatches(scene, context, m_meshRanges, m_drawBatches, m_instances);
-		if(UploadInstanceTransforms(device, m_instanceBuffer, m_instanceBufferBytes, m_instances))
-		{
-			commandList->BindStorageBuffer(Layout::kBindlessTransformStorageBinding, m_instanceBuffer, 0, m_instanceBufferBytes);
-			const RendererDesc& config = *context.config;
-			const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-			for(const DrawBatch& batch : m_drawBatches)
-			{
-				if(batch.meshIndex >= m_meshRanges.size() || batch.materialIndex >= materialStates.size()) continue;
-				const MeshRange& range = m_meshRanges[batch.meshIndex];
-				if(range.indexCount == 0u || batch.instanceCount == 0u) continue;
-
-				const MaterialDesc& material = scene.GetMaterial(static_cast<MaterialID>(batch.materialIndex));
-				const SceneMaterialState& materialState = materialStates[batch.materialIndex];
-				Layout::DrawConstants drawConstants = MakeDrawConstants(
-					config, material, materialState, Transform{}, batch.textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-				drawConstants.firstVertex = batch.firstInstance + 1u;
-				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-				commandList->DrawIndexedInstanced(range.indexCount, batch.instanceCount, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
-			}
-		}
-
-		SubmitMainPass(device, commandList);
-	}
-
-	void BindlessPath::Shutdown(RHI::IDevice* device)
-	{
-		if(device == nullptr) return;
-		DestroyBuffer(device, m_vertexBuffer, m_vertexBufferBytes);
-		DestroyBuffer(device, m_indexBuffer, m_indexBufferBytes);
-		DestroyBuffer(device, m_instanceBuffer, m_instanceBufferBytes);
-		m_meshRanges.clear();
-		m_drawBatches.clear();
-		m_instances.clear();
-	}
 }
 
 namespace dy::Graphics
@@ -835,7 +1022,7 @@ namespace dy::Graphics
 		switch(bindingMode)
 		{
 		case RendererBindingMode::Bindless:
-			return std::make_unique<BindlessPath>();
+			return nullptr;
 		case RendererBindingMode::BatchedBind:
 			return std::make_unique<BatchedBindPath>();
 		case RendererBindingMode::PerDrawBind:

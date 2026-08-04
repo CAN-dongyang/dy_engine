@@ -2,19 +2,17 @@
 #include <cstdint>
 
 #include "Format.h"
-#include "ShaderLayout.h"
+#include "ResourceHandles.h"
 
 namespace dy::RHI
 {
 	class ICommandList;
 
-	class IBuffer;
-	class ITexture;
-	class IPipelineState;
-
 	struct BufferDesc;
 	struct TextureDesc;
 	struct GraphicsPipelineDesc;
+	struct ResourceSetDesc;
+	struct ShaderDesc;
 
 	enum class PresentMode : uint32_t
 	{
@@ -33,10 +31,6 @@ namespace dy::RHI
 	struct DeviceDesc
 	{
 		uint32_t maxFramesInFlight = 2;
-		uint32_t maxDrawsPerFrame = 128;
-		uint32_t maxBindlessTextures = 128;
-		uint32_t defaultShadowMapResolution = 2048;
-		ShaderLayoutDesc shaderLayout = {};
 	};
 
 	class IDevice
@@ -50,29 +44,34 @@ namespace dy::RHI
 		[[nodiscard]] virtual bool BeginFrame() = 0;
 		[[nodiscard]] virtual RHI::ICommandList* AcquireCommandList()	= 0;
 
+		// 유효한 owned·closed 목록은 성공 여부와 무관하게 소비한다.
 		[[nodiscard]] virtual bool Submit(ICommandList** cmdLists, uint32_t count) = 0;
 		virtual void Present() = 0;
 
-		[[nodiscard]] virtual ITexture* GetBackBuffer() = 0;
+		[[nodiscard]] virtual TextureHandle GetBackBuffer() = 0;
 
-		[[nodiscard]] virtual IBuffer* CreateBuffer(const BufferDesc& desc) = 0;
-		[[nodiscard]] virtual ITexture* CreateTexture(const TextureDesc& desc) = 0;
-		[[nodiscard]] virtual IPipelineState* CreateGraphicsPipeline(const GraphicsPipelineDesc& desc) = 0;
+		[[nodiscard]] virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
+		[[nodiscard]] virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
+		[[nodiscard]] virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
+		[[nodiscard]] virtual PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc) = 0;
+		[[nodiscard]] virtual ResourceSetHandle CreateResourceSet(const ResourceSetDesc& desc) = 0;
 		
-		virtual void DestroyBuffer(IBuffer* buffer) = 0;
-		virtual void DestroyTexture(ITexture* texture) = 0;
-		virtual void DestroyPipelineState(IPipelineState* pipeline) = 0;
+		virtual void DestroyBuffer(BufferHandle buffer) = 0;
+		virtual void DestroyTexture(TextureHandle texture) = 0;
+		virtual void DestroyShader(ShaderHandle shader) = 0;
+		virtual void DestroyPipeline(PipelineHandle pipeline) = 0;
+		virtual void DestroyResourceSet(ResourceSetHandle resourceSet) = 0;
 
-		virtual bool UpdateTexture(ITexture* texture, const void* data, uint32_t rowPitch) = 0;
-
-		// (Vulkan: 내부 처리 → false. D3D12: 명시 필요 → true. Phase 3에서 통일 예정.)
-		[[nodiscard]] virtual bool RequiresExplicitShadowPass() const { return false; }
-		// (D3D12/Metal: false. Vulkan: true)
-		[[nodiscard]] virtual bool RequiresClipSpaceYFlip() const { return false; }
-
-		[[nodiscard]] virtual DescriptorIndex AllocateDescriptorSlot() { return INVALID_DESCRIPTOR_INDEX; }
-		virtual void UpdateDescriptorSlot(DescriptorIndex index, ITexture* texture) { (void)index; (void)texture; }
-		virtual void UpdateDescriptorSlot(DescriptorIndex index, IBuffer* buffer) { (void)index; (void)buffer; }
+		virtual bool UpdateBuffer(ICommandList& commandList, BufferHandle buffer, uint32_t offset, const void* data, uint32_t size) = 0;
+		virtual bool UpdateTexture(
+			ICommandList& commandList,
+			TextureHandle texture,
+			uint32_t mipLevel,
+			uint32_t arrayLayer,
+			const void* data,
+			uint32_t dataSize,
+			uint32_t rowPitch,
+			uint32_t slicePitch) = 0;
 
 	protected:
 		virtual int Initialize(const void* windowHandle, const DeviceDesc& desc) = 0;

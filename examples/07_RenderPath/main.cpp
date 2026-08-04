@@ -3,7 +3,7 @@
 // Compares draw-submission strategies under a heavy, multi-model, multi-texture
 // scene, plus an isolated SIMD matrix-multiply micro-benchmark.
 //
-//   Binding mode (runtime):  --per-draw | --batched | --bindless
+//   Binding mode (runtime):  --per-draw | --batched
 //   Instance count (runtime): --count=N
 //   SIMD (build flag):        cmake -DDY_ENABLE_SIMD=ON|OFF   (reported at startup)
 //
@@ -26,27 +26,10 @@
 #include "Platform/Window.h"
 #include "RHI/IDevice.h"
 
-#ifndef DY_SHADER_DIR
-#define DY_SHADER_DIR "./Shaders"
-#endif
-
 using namespace dy;
 
 namespace
 {
-	const char* ShaderExt()
-	{
-#if defined(ENABLE_METAL)
-		return ".metal";
-#elif defined(ENABLE_VULKAN)
-		return ".spv";
-#elif defined(ENABLE_D3D12)
-		return ".hlsl";
-#else
-		return ".glsl";
-#endif
-	}
-
 	Graphics::RendererBindingMode SelectBindingMode(int argc, char** argv)
 	{
 		for(int i = 1; i < argc; ++i)
@@ -54,7 +37,6 @@ namespace
 			const std::string arg = argv[i] != nullptr ? argv[i] : "";
 			if(arg == "--per-draw" || arg == "--binding=per-draw") return Graphics::RendererBindingMode::PerDrawBind;
 			if(arg == "--batched"  || arg == "--binding=batched")  return Graphics::RendererBindingMode::BatchedBind;
-			if(arg == "--bindless" || arg == "--binding=bindless") return Graphics::RendererBindingMode::Bindless;
 		}
 		return Graphics::RendererBindingMode::PerDrawBind;
 	}
@@ -153,10 +135,7 @@ int main(int argc, char** argv)
 
 		Platform::Window window(1280, 720, "RenderPath");
 
-		RHI::DeviceDesc deviceDesc = {};
-		deviceDesc.maxDrawsPerFrame = targetCount + 16u;     // PerDraw 모드: 드로우당 디스크립터 필요
-		deviceDesc.maxBindlessTextures = 256u;               // 여러 모델의 텍스처 수용
-		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle(), deviceDesc));
+		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle()));
 		if(!device) throw std::runtime_error("Failed to create RHI device");
 
 		// ----- SIMD 마이크로벤치 (렌더링과 무관) -----
@@ -236,14 +215,8 @@ int main(int argc, char** argv)
 		}
 
 		// ----- 렌더러 -----
-		const std::string ext = ShaderExt();
-		const std::string vsPath = std::string(DY_SHADER_DIR) + "/mesh_vs" + ext;
-		const std::string psPath = std::string(DY_SHADER_DIR) + "/mesh_ps" + ext;
-
 		Graphics::RendererDesc cfg = {};
 		cfg.bindingMode = bindingMode;
-		cfg.vertexShaderPath = vsPath.c_str();
-		cfg.pixelShaderPath = psPath.c_str();
 		cfg.clearColor = Math::float4(0.02f, 0.03f, 0.05f, 1.0f);
 
 		Graphics::Renderer renderer;

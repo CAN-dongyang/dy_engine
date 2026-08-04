@@ -17,6 +17,8 @@ namespace dy::RHI
 		R8G8B8A8_UNORM_SRGB,   // 하드웨어가 선형→sRGB 인코딩(셰이더에서 수동 감마 금지)
 		B8G8R8A8_UNORM_SRGB,
 		R16G16B16A16_FLOAT,
+		R32G32_FLOAT,
+		R32G32B32_FLOAT,
 		R32G32B32A32_FLOAT,
 		D32_FLOAT,
 		D24_UNORM_S8_UINT,
@@ -30,9 +32,4 @@ namespace dy::RHI
 		return format == Format::R8G8B8A8_UNORM_SRGB || format == Format::B8G8R8A8_UNORM_SRGB;
 	}
 
-	using DescriptorIndex = uint32_t;
-	static const DescriptorIndex INVALID_DESCRIPTOR_INDEX = static_cast<DescriptorIndex>(-1);
-
-	using BindingIndex = uint32_t;
-	static const BindingIndex INVALID_BINDING_INDEX = static_cast<BindingIndex>(-1);
 }

@@ -1,13 +1,13 @@
 #pragma once
+
 #include <cstdint>
+
 #include "Format.h"
+#include "ResourceHandles.h"
+#include "ResourceState.h"
 
 namespace dy::RHI
 {
-	class IBuffer;
-	class ITexture;
-	class IPipelineState;
-
 	struct Viewport
 	{
 		float x = 0.0f;
@@ -26,56 +26,86 @@ namespace dy::RHI
 		uint32_t height = 0;
 	};
 
-	struct GeometryBinding
+	enum class LoadOp : uint8_t
 	{
-		IBuffer* vertexBuffer = nullptr;
-		uint32_t vertexStride = 0;
-		uint32_t vertexOffset = 0;
-		IBuffer* indexBuffer = nullptr;
-		Format indexFormat = Format::Unknown;
-		uint32_t indexOffset = 0;
+		Undefined,
+		Load,
+		Clear,
+		Discard
+	};
+
+	enum class StoreOp : uint8_t
+	{
+		Undefined,
+		Store,
+		Discard
+	};
+
+	struct ColorAttachment
+	{
+		TextureHandle texture = nullptr;
+		uint32_t mipLevel = 0;
+		uint32_t arrayLayer = 0;
+		LoadOp loadOp = LoadOp::Undefined;
+		StoreOp storeOp = StoreOp::Undefined;
+		float clearColor[4] = {};
+	};
+
+	struct DepthStencilAttachment
+	{
+		TextureHandle texture = nullptr;
+		uint32_t mipLevel = 0;
+		uint32_t arrayLayer = 0;
+		ResourceState state = ResourceState::Undefined;
+		LoadOp depthLoadOp = LoadOp::Undefined;
+		StoreOp depthStoreOp = StoreOp::Undefined;
+		float clearDepth = 1.0f;
+		LoadOp stencilLoadOp = LoadOp::Undefined;
+		StoreOp stencilStoreOp = StoreOp::Undefined;
+		uint32_t clearStencil = 0;
+	};
+
+	struct RenderingDesc
+	{
+		const ColorAttachment* colorAttachments = nullptr;
+		uint32_t colorAttachmentCount = 0;
+		const DepthStencilAttachment* depthStencilAttachment = nullptr;
+	};
+
+	struct ResourceBarrierDesc
+	{
+		BufferHandle buffer = nullptr;
+		TextureHandle texture = nullptr;
+		ResourceState before = ResourceState::Undefined;
+		ResourceState after = ResourceState::Undefined;
+		TextureSubresourceRange subresources = {};
 	};
 
 	class ICommandList
 	{
 	public:
-		virtual ~ICommandList() = default;
+		virtual void ResourceBarrier(const ResourceBarrierDesc* barriers, uint32_t count) = 0;
+		virtual void BeginRendering(const RenderingDesc& desc) = 0;
+		virtual void EndRendering() = 0;
 
-		// pipeline
-		virtual void BindGraphicsPipeline(IPipelineState* pipelineState) = 0;
-		virtual void BindGlobalDescriptors() = 0;
+		// Graphics bind와 draw는 BeginRendering/EndRendering 사이에서 기록한다.
+		// Pipeline bind는 inline constant 초기화 범위를 새로 시작한다.
+		virtual void BindGraphicsPipeline(PipelineHandle pipelineState) = 0;
+		virtual void BindResourceSet(ResourceSetHandle resourceSet) = 0;
+		virtual void BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint32_t offset) = 0;
+		virtual void BindIndexBuffer(BufferHandle buffer, Format format, uint32_t offset) = 0;
+		virtual void SetInlineConstants(uint32_t offset, uint32_t size, const void* data) = 0;
 
-		// geometry binding / Input Assembly
-		virtual void BindGeometry(const GeometryBinding& geometry) = 0;
-		virtual void BindVertexBuffer(IBuffer* buffer, uint32_t stride, uint32_t offset) = 0;
-		virtual void BindIndexBuffer(IBuffer* buffer, Format format, uint32_t offset) = 0;
-
-		// descriptor binding
-		virtual void BindConstantBuffer(uint32_t binding, IBuffer* buffer, uint32_t offset, uint32_t size) { (void)binding; (void)buffer; (void)offset; (void)size; }
-		virtual void BindTexture(uint32_t binding, ITexture* texture) { (void)binding; (void)texture; }
-		virtual void BindStorageBuffer(uint32_t binding, IBuffer* buffer, uint32_t offset, uint32_t size)
-		{
-			(void)binding; (void)buffer; (void)offset; (void)size;
-		}
-
-		// shader constants
-		virtual void SetInlineConstants(uint32_t size, const void* data) = 0;
-
-		// output state
-		virtual void SetRenderTargets(uint32_t numRenderTargets, ITexture** renderTargets, ITexture* depthStencil) = 0;
 		virtual void SetViewport(const Viewport& viewport) = 0;
 		virtual void SetScissor(const Rect& rect) = 0;
-		virtual void ClearColor(ITexture* renderTarget, float r, float g, float b, float a) = 0;
-		virtual void ClearDepth(ITexture* depthStencil, float depth) = 0;
+		virtual void SetStencilReference(uint32_t reference) = 0;
 
-		// draw
 		virtual void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) = 0;
 		virtual void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) = 0;
 
-		// lifecycle
 		virtual void Close() = 0;
 
-		// Compute Commands
-		// virtual void DispatchCompute(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ) = 0;
+	protected:
+		virtual ~ICommandList() = default;
 	};
 }

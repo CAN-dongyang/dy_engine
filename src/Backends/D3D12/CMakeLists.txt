@@ -9,12 +9,13 @@ add_library(${BACKEND_NAME} OBJECT
 	D3D12Buffer.cpp       
 	D3D12CommandList.cpp  
 	D3D12PipelineState.cpp
+	D3D12ResourceSet.cpp
 	D3D12Texture.cpp
 )
 
 target_link_libraries(${BACKEND_NAME} PRIVATE
 	Engine_Options
-	d3d12 dxgi dxguid d3dcompiler
+	d3d12 dxgi dxguid
 )
 
 target_compile_definitions(${BACKEND_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -3,7 +3,6 @@
 
 #include "Math/Math.h"
 #include "RHI/Format.h"
-#include "RHI/ShaderLayout.h"
 #include "Graphics/Mesh.h"
 #include "Graphics/ShadowMath.h" // ShadowMapDesc
 
@@ -30,9 +29,6 @@ namespace dy::Graphics
 		float specularIntensity = 1.0f;
 	};
 
-	// 고수준 카메라 명세. Renderer::SetCamera 가 view·proj·cameraPosition 을 만들고
-	// 백엔드 클립공간 Y 뒤집기까지 처리한다. 사용자는 백엔드 NDC 관례를 몰라도 된다.
-	// (직접 행렬을 다루려는 deep 유저는 SetViewProjection/SetCameraPosition 으로 우회.)
 	struct CameraDesc
 	{
 		Math::float3 eye = Math::float3(0.0f, 0.0f, 3.0f);
@@ -50,9 +46,6 @@ namespace dy::Graphics
 	struct RendererDesc
 	{
 		RendererBindingMode bindingMode = RendererBindingMode::PerDrawBind;
-		const char* vertexShaderPath = nullptr;
-		const char* pixelShaderPath = nullptr;
-		const char* shadowVertexShaderPath = nullptr;
 		RHI::Format outputFormat = RHI::Format::B8G8R8A8_UNORM;
 		uint32_t backBufferCount = 2;
 		bool vsync = true;
@@ -69,7 +62,6 @@ namespace dy::Graphics
 		EnvironmentDesc environment = {};
 		bool enableShadows = false;
 		bool enableMainPass = true;
-		bool enableBindlessTextures = false;
 		float shadowStrength = 0.45f;
 		ShadowMapDesc shadowMap = {};
 		bool autoFitShadowMap = true;
@@ -77,9 +69,7 @@ namespace dy::Graphics
 		float shadowDepthBias = 0.0007f;
 		float shadowSlopeBias = 0.003f;
 		float shadowNormalBias = 0.0f;
+		float shadowRasterSlopeBias = 1.75f;
 		uint32_t shadowPcfRadius = 1;
-
-		// 셰이더 바인딩 ABI(데이터). 미지정 시 엔진 표준 계약. 사용자 셰이더 제공 시 함께 지정.
-		RHI::ShaderLayoutDesc shaderLayout = {};
 	};
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -9,14 +10,12 @@
 #include "Graphics/RenderPass.h"
 #include "Graphics/RenderPath.h"
 #include "Graphics/RendererConfig.h"
-#include "Graphics/RendererShaderLayout.h"
+#include "RHI/ResourceHandles.h"
 
 namespace dy::RHI
 {
-	class IBuffer;
+	class ICommandList;
 	class IDevice;
-	class IPipelineState;
-	class ITexture;
 }
 
 namespace dy::Graphics
@@ -47,8 +46,8 @@ namespace dy::Graphics
 		void Shutdown(RHI::IDevice* device) override;
 		void Render(const Scene& scene, RHI::IDevice* device) override;
 		
-		void SetCamera(const CameraDesc& camera); // 고수준 카메라 설정: view·proj·cameraPosition 생성 + 백엔드 Y 뒤집기 처리.
-		void SetViewProjection(const Math::float4x4& viewProjection); // 저수준(deep) 우회: 행렬/위치를 직접 지정.
+		void SetCamera(const CameraDesc& camera);
+		void SetViewProjection(const Math::float4x4& viewProjection);
 		void SetCameraPosition(const Math::float3& cameraPosition);
 		void SetDirectionalLight(const Math::float3& direction, const Math::float3& color, float intensity);
 		void SetAmbientLight(const Math::float3& color, float intensity);
@@ -58,33 +57,37 @@ namespace dy::Graphics
 	private:
 		void BuildPipelineStates(RHI::IDevice* device);
 		void BuildRenderPassPlan();
+		[[nodiscard]] bool CreateDefaultMaterialTextures(RHI::IDevice* device);
 		void EnsureDepthStencilTarget(RHI::IDevice* device);
 		void EnsureShadowDepthTarget(RHI::IDevice* device);
 		void EnsureMaterialStateCapacity(std::size_t materialCount);
 		void UpdateMaterialStates(const Scene& scene);
-		void UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device);
-		void UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device);
+		[[nodiscard]] bool UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device, RHI::ICommandList& commandList);
+		[[nodiscard]] bool UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device, RHI::ICommandList& commandList);
 		[[nodiscard]] bool IsRenderPassEnabled(RenderPassKind passKind) const;
 		[[nodiscard]] bool IsShadowEnabled() const;
 
 		RendererDesc m_config = {};
 		std::vector<RenderPassDesc> m_renderPasses;
-		std::vector<char> m_vertexShaderSource;
-		std::vector<char> m_pixelShaderSource;
-		std::vector<char> m_shadowVertexShaderSource;
-		RHI::IPipelineState* m_pipeline = nullptr;
-		RHI::IPipelineState* m_shadowPipeline = nullptr;
-		RHI::ITexture* m_depthStencilTarget = nullptr;
-		RHI::ITexture* m_shadowDepthTarget = nullptr;
-		RHI::IBuffer* m_lightingBuffer = nullptr;
-		RHI::IBuffer* m_shadowMatrixBuffer = nullptr;
-		uint32_t m_shadowDescriptorIndex = 0xFFFFFFFFu;
-		bool m_useExplicitShadowPass = false;
+		RHI::ShaderHandle m_vertexShader = nullptr;
+		RHI::ShaderHandle m_fragmentShader = nullptr;
+		RHI::ShaderHandle m_shadowVertexShader = nullptr;
+		RHI::PipelineHandle m_pipeline = nullptr;
+		RHI::PipelineHandle m_shadowPipeline = nullptr;
+		RHI::TextureHandle m_depthStencilTarget = nullptr;
+		RHI::TextureHandle m_shadowDepthTarget = nullptr;
+		RHI::BufferHandle m_lightingBuffer = nullptr;
+		RHI::BufferHandle m_shadowMatrixBuffer = nullptr;
+		std::array<RHI::TextureHandle, 3> m_defaultMaterialTextures = {};
+		RHI::ResourceState m_depthStencilState = RHI::ResourceState::Undefined;
+		RHI::ResourceState m_shadowDepthState = RHI::ResourceState::Undefined;
+		bool m_lightingBufferReady = false;
+		bool m_shadowMatrixBufferReady = false;
+		bool m_shadowPassEnabled = false;
 		GpuScene m_gpuScene;
 		std::vector<SceneMaterialState> m_materialStates;
 		std::unique_ptr<IRenderPath> m_path;
 		RendererBindingMode m_initialBindingMode = RendererBindingMode::PerDrawBind;
 		bool m_hasInitialConfig = false;
-		bool m_clipYFlip = false; // 백엔드 클립공간 Y 뒤집기 필요 여부(Initialize 에서 device 질의)
 	};
 }
