@@ -11,10 +11,13 @@
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <algorithm>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <utility>
 #include <vector>
 #include <wrl.h>
-#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -26,43 +29,127 @@ namespace dy::Backends
         constexpr uint32_t kTransientDescriptorSlotCount = 1;
     }
 
+    struct D3D12FrameSlot
+    {
+        uint64_t completionValue = 0;
+    };
+
+    struct D3D12SubmissionRecord
+    {
+        uint64_t completionValue = 0;
+        std::vector<std::unique_ptr<D3D12CommandList>> commandLists;
+        std::vector<ComPtr<ID3D12Object>> retainedObjects;
+    };
+
     // 헤더에서 선언만 했던 구조체의 실제 정의
     struct D3D12InternalState
     {
         ComPtr<ID3D12Device> device;
         ComPtr<ID3D12InfoQueue> infoQueue; // 디버그 빌드: D3D12 검증 메시지 수집
         ComPtr<ID3D12CommandQueue> commandQueue;
+        HWND windowHandle = nullptr;
         ComPtr<IDXGISwapChain3> swapChain;
         ComPtr<ID3D12DescriptorHeap> rtvHeap;
-        ComPtr<ID3D12Resource> renderTargets[2];
+        std::vector<std::unique_ptr<D3D12Texture>> backBufferTextures;
+        std::vector<uint64_t> imageCompletionValues;
 
         ComPtr<ID3D12Fence> fence;
-        uint32_t fenceValue = 1;
-        uint64_t frameFenceValues[2] = { 0, 0 };
-        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> frameUploadBuffers[2];
-        std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> frameUploadAllocators[2];
-        std::vector<Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>> frameUploadCommandLists[2];
+        uint64_t nextCompletionValue = 1;
         HANDLE fenceEvent = nullptr;
+        std::vector<D3D12FrameSlot> frames;
+        std::vector<D3D12SubmissionRecord> submissions;
+        std::vector<std::unique_ptr<D3D12CommandList>> activeCommandLists;
 
-        uint32_t frameIndex = 0;
-        uint32_t rtvDescriptorSize = 0;
+        uint32_t nextFrameIndex = 0;
+        uint32_t activeFrameIndex = 0;
+        uint32_t activeImageIndex = 0;
+        UINT presentSyncInterval = 1;
+        UINT presentFlags = 0;
+        UINT swapchainFlags = 0;
+        DXGI_FORMAT swapchainResourceFormat = DXGI_FORMAT_UNKNOWN;
+        DXGI_FORMAT swapchainRtvFormat = DXGI_FORMAT_UNKNOWN;
+        RHI::Format swapchainFormat = RHI::Format::Unknown;
+        RHI::SwapchainDesc swapchainDesc = {};
+        bool swapchainReady = false;
+        bool frameReady = false;
+        bool frameSubmitted = false;
+        bool submissionFaulted = false;
 
         ComPtr<ID3D12DescriptorHeap> globalDescriptorHeap;
         uint32_t descriptorSlotOffset = 0;
         uint32_t srvDescriptorSize = 0;
 
-        // Depth Stencil 관련
-        ComPtr<ID3D12DescriptorHeap> dsvHeap;
-        ComPtr<ID3D12Resource> depthStencilBuffer;
-        uint32_t dsvDescriptorSize = 0;
-
-        D3D12CommandList* commandLists[2] = { nullptr, nullptr };
-        D3D12Texture* backBufferTextures[2] = { nullptr, nullptr };
-        
-        ComPtr<ID3D12CommandAllocator> commandAllocators[2];
         ComPtr<ID3D12RootSignature> deviceRootSignature;
         ComPtr<ID3D12PipelineState> texturedTrianglePipeline;
     };
+
+    static bool CreateBackBufferViews(
+        D3D12InternalState* internal,
+        IDXGISwapChain3* swapchain,
+        RHI::Format format,
+        DXGI_FORMAT resourceFormat,
+        DXGI_FORMAT rtvFormat,
+        ComPtr<ID3D12DescriptorHeap>& rtvHeap,
+        std::vector<std::unique_ptr<D3D12Texture>>& textures)
+    {
+        if (internal == nullptr || internal->device == nullptr || swapchain == nullptr)
+        {
+            return false;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 actualDesc = {};
+        if (FAILED(swapchain->GetDesc1(&actualDesc)) || actualDesc.BufferCount == 0 ||
+            actualDesc.Format != resourceFormat)
+        {
+            return false;
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.NumDescriptors = actualDesc.BufferCount;
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        ComPtr<ID3D12DescriptorHeap> newRtvHeap;
+        if (FAILED(internal->device->CreateDescriptorHeap(
+                &heapDesc, IID_PPV_ARGS(&newRtvHeap))))
+        {
+            return false;
+        }
+
+        const uint32_t descriptorSize =
+            internal->device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+            newRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_RENDER_TARGET_VIEW_DESC viewDesc = {};
+        viewDesc.Format = rtvFormat;
+        viewDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+
+        std::vector<std::unique_ptr<D3D12Texture>> newTextures;
+        newTextures.reserve(actualDesc.BufferCount);
+        for (UINT imageIndex = 0; imageIndex < actualDesc.BufferCount; ++imageIndex)
+        {
+            ComPtr<ID3D12Resource> resource;
+            if (FAILED(swapchain->GetBuffer(imageIndex, IID_PPV_ARGS(&resource))))
+            {
+                return false;
+            }
+
+            internal->device->CreateRenderTargetView(
+                resource.Get(), &viewDesc, rtvHandle);
+            const D3D12_RESOURCE_DESC nativeDesc = resource->GetDesc();
+            RHI::TextureDesc textureDesc = {};
+            textureDesc.width = static_cast<uint32_t>(nativeDesc.Width);
+            textureDesc.height = nativeDesc.Height;
+            textureDesc.format = format;
+            textureDesc.usage = RHI::TextureUsage::RenderTarget;
+            newTextures.push_back(std::make_unique<D3D12Texture>(
+                resource.Get(), textureDesc, rtvHandle.ptr, true));
+            rtvHandle.ptr += descriptorSize;
+        }
+
+        rtvHeap = std::move(newRtvHeap);
+        textures = std::move(newTextures);
+        return true;
+    }
 
     // 누적된 D3D12 검증 메시지를 stdout 으로 덤프하고 디바이스 제거 사유를 확인한다.
     // (디버그 레이어가 켜진 디버그 빌드에서만 메시지가 쌓인다.)
@@ -94,16 +181,31 @@ namespace dy::Backends
 
     D3D12Device::~D3D12Device()
     {
-        for (int i = 0; i < 2; ++i) {
-            delete m_internal->commandLists[i];
-            delete m_internal->backBufferTextures[i];
+        if (m_internal == nullptr) return;
+
+        if (m_internal->commandQueue != nullptr &&
+            m_internal->fence != nullptr &&
+            m_internal->fenceEvent != nullptr)
+        {
+            const uint64_t completionValue = m_internal->nextCompletionValue++;
+            if (SUCCEEDED(m_internal->commandQueue->Signal(
+                    m_internal->fence.Get(), completionValue)) &&
+                m_internal->fence->GetCompletedValue() < completionValue &&
+                SUCCEEDED(m_internal->fence->SetEventOnCompletion(
+                    completionValue, m_internal->fenceEvent)))
+            {
+                WaitForSingleObject(m_internal->fenceEvent, INFINITE);
+            }
         }
+
+        if (m_internal->fenceEvent != nullptr) CloseHandle(m_internal->fenceEvent);
         delete m_internal;
     }
 
     int D3D12Device::Initialize(const void* windowHandle, const RHI::DeviceDesc& desc)
     {
-        HWND hwnd = static_cast<HWND>(const_cast<void*>(windowHandle));
+        if (windowHandle == nullptr || desc.maxFramesInFlight == 0) return -1;
+        m_internal->windowHandle = static_cast<HWND>(const_cast<void*>(windowHandle));
 
 #if defined(_DEBUG)
         // 디버그 레이어 활성화(디바이스 생성 전 필수). 이래야 InfoQueue 에 검증 메시지가 쌓인다.
@@ -117,8 +219,6 @@ namespace dy::Backends
 #endif
 
         // 1. 디바이스 생성
-        ComPtr<IDXGIFactory4> factory;
-        CreateDXGIFactory1(IID_PPV_ARGS(&factory));
         if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_internal->device)))) {
             return -1;
         }
@@ -135,72 +235,20 @@ namespace dy::Backends
         // 2. 커맨드 큐 생성
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        m_internal->device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_internal->commandQueue));
-
-        // 3. 스왑체인(화면 버퍼 2개) 생성
-        RECT rect = {};
-        GetClientRect(hwnd, &rect);
-        uint32_t width = rect.right - rect.left;
-        uint32_t height = rect.bottom - rect.top;
-        if (width == 0 || height == 0) {
-            width = 1280;
-            height = 720;
-        }
-
-        // DeviceDesc 의 포맷을 그대로 따른다(기본 R8G8B8A8_UNORM).
-        // 주의: FLIP 스왑체인은 sRGB 버퍼 포맷을 직접 허용하지 않으므로, sRGB 가 필요하면
-        // 버퍼는 UNORM 으로 만들고 RTV 만 sRGB 로 두는 분리가 필요(현재 기본 UNORM 이라 무관).
-        const DXGI_FORMAT swapchainDxgiFormat = static_cast<DXGI_FORMAT>(D3D12Texture::ToDxgiFormat(desc.swapchainFormat));
-
-        DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.BufferCount = 2;
-        swapChainDesc.Width = width;
-        swapChainDesc.Height = height;
-        swapChainDesc.Format = swapchainDxgiFormat;
-        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        swapChainDesc.SampleDesc.Count = 1;
-
-        ComPtr<IDXGISwapChain1> tempSwapChain;
-        factory->CreateSwapChainForHwnd(m_internal->commandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &tempSwapChain);
-        tempSwapChain.As(&m_internal->swapChain);
-        m_internal->frameIndex = m_internal->swapChain->GetCurrentBackBufferIndex();
-
-        // 4. RTV(렌더 타겟 뷰) 힙 생성
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = 2;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        m_internal->device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_internal->rtvHeap));
-        m_internal->rtvDescriptorSize = m_internal->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
-        // 4-1. 커맨드 할당자(Command Allocator) 생성
-        for (int i = 0; i < 2; i++) {
-            m_internal->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_internal->commandAllocators[i]));
-        }
-
-        // 5. 렌더 타겟 뷰(RTV) 연결
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_internal->rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        
-        RHI::TextureDesc bbDesc = {};
-        bbDesc.width = swapChainDesc.Width;
-        bbDesc.height = swapChainDesc.Height;
-        bbDesc.format = desc.swapchainFormat;
-        bbDesc.usage = RHI::TextureUsage::RenderTarget;
-
-        for (UINT n = 0; n < 2; n++)
+        if (FAILED(m_internal->device->CreateCommandQueue(
+                &queueDesc, IID_PPV_ARGS(&m_internal->commandQueue))))
         {
-            m_internal->swapChain->GetBuffer(n, IID_PPV_ARGS(&m_internal->renderTargets[n]));
-            m_internal->device->CreateRenderTargetView(m_internal->renderTargets[n].Get(), nullptr, rtvHandle);
-            
-            m_internal->backBufferTextures[n] = new D3D12Texture(m_internal->renderTargets[n].Get(), bbDesc);
-            
-            rtvHandle.ptr += m_internal->rtvDescriptorSize;
+            return -1;
         }
 
         // 6. 동기화용 펜스(Fence) 생성
-        m_internal->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_internal->fence));
+        if (FAILED(m_internal->device->CreateFence(
+                0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_internal->fence))))
+        {
+            return -1;
+        }
         m_internal->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (m_internal->fenceEvent == nullptr) return -1;
 
         // 7. 글로벌 디스크립터 힙 생성
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
@@ -215,106 +263,458 @@ namespace dy::Backends
         }
         m_internal->srvDescriptorSize = m_internal->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-        // 8. 깊이 버퍼(Depth Buffer) 생성
-        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.NumDescriptors = 1;
-        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        m_internal->device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_internal->dsvHeap));
-        m_internal->dsvDescriptorSize = m_internal->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-
-        D3D12_RESOURCE_DESC depthDesc = {};
-        depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        depthDesc.Alignment = 0;
-        depthDesc.Width = swapChainDesc.Width;
-        depthDesc.Height = swapChainDesc.Height;
-        depthDesc.DepthOrArraySize = 1;
-        depthDesc.MipLevels = 1;
-        depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depthDesc.SampleDesc.Count = 1;
-        depthDesc.SampleDesc.Quality = 0;
-        depthDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-        D3D12_CLEAR_VALUE depthOptimizedClearValue = {};
-        depthOptimizedClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depthOptimizedClearValue.DepthStencil.Depth = 1.0f;
-        depthOptimizedClearValue.DepthStencil.Stencil = 0;
-
-        CD3DX12_HEAP_PROPERTIES depthHeapProps(D3D12_HEAP_TYPE_DEFAULT);
-        m_internal->device->CreateCommittedResource(
-            &depthHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &depthDesc,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            &depthOptimizedClearValue,
-            IID_PPV_ARGS(&m_internal->depthStencilBuffer)
-        );
-
-        m_internal->device->CreateDepthStencilView(m_internal->depthStencilBuffer.Get(), nullptr, m_internal->dsvHeap->GetCPUDescriptorHandleForHeapStart());
-
-        // 9. 커맨드 리스트 미리 할당
-        D3D12_CPU_DESCRIPTOR_HANDLE currentRtv = m_internal->rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_internal->dsvHeap->GetCPUDescriptorHandleForHeapStart();
-        for (int i = 0; i < 2; i++) {
-            m_internal->commandLists[i] = new D3D12CommandList(m_internal->device.Get(), m_internal->renderTargets[i].Get(), currentRtv.ptr, m_internal->globalDescriptorHeap.Get(), m_internal->srvDescriptorSize);
-            m_internal->commandLists[i]->SetDepthStencilView(dsvHandle.ptr); // DSV 등록
-            m_internal->commandLists[i]->SetBackBufferTexture(m_internal->backBufferTextures[i]); // 백버퍼 상태 추적기 연결
-            currentRtv.ptr += m_internal->rtvDescriptorSize;
-        }
-
-        std::cout << "[D3D12Device] Initialization Complete (with Depth Buffer)!" << std::endl;
+        m_internal->frames.resize(desc.maxFramesInFlight);
         return 0;
     }
 
-    void D3D12Device::BeginFrame() { 
-        m_internal->commandLists[m_internal->frameIndex]->Reset();
-    }
-    uint32_t D3D12Device::GetCurrentFrameIndex() const { return m_internal->frameIndex; }
-
-    RHI::ICommandList* D3D12Device::AcquireCommandList() { 
-        return m_internal->commandLists[m_internal->frameIndex];
-    }
-    void D3D12Device::Submit(RHI::ICommandList** cmdLists, uint32_t count) {
-		if (count == 0) return;
-        // 1. 실행할 DX12 커맨드 리스트들을 모을 배열
-        std::vector<ID3D12CommandList*> ppCommandLists;
-        ppCommandLists.reserve(count);
-
-        for (uint32_t i = 0; i < count; ++i) {
-            D3D12CommandList* d3d12List = static_cast<D3D12CommandList*>(cmdLists[i]);
-            ppCommandLists.push_back(reinterpret_cast<ID3D12CommandList*>(d3d12List->GetNativeList()));
+    bool D3D12Device::CreateSwapchain(const RHI::SwapchainDesc& desc)
+    {
+        if (m_internal == nullptr || m_internal->device == nullptr ||
+            m_internal->commandQueue == nullptr || m_internal->windowHandle == nullptr ||
+            m_internal->swapchainReady || desc.minimumImageCount == 0 ||
+            desc.minimumImageCount > DXGI_MAX_SWAP_CHAIN_BUFFERS)
+        {
+            return false;
         }
 
-        // 2. 한 번에 묶어서 GPU에 제출 (성능 상 훨씬 유리)
-        m_internal->commandQueue->ExecuteCommandLists(count, ppCommandLists.data());
+        RHI::Format actualFormat = desc.format;
+        DXGI_FORMAT resourceFormat = DXGI_FORMAT_UNKNOWN;
+        DXGI_FORMAT rtvFormat = DXGI_FORMAT_UNKNOWN;
+        switch (desc.format)
+        {
+        case RHI::Format::Unknown:
+            actualFormat = RHI::Format::R8G8B8A8_UNORM;
+            resourceFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case RHI::Format::R8G8B8A8_UNORM:
+            resourceFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case RHI::Format::B8G8R8A8_UNORM:
+            resourceFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+            rtvFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+            break;
+        case RHI::Format::R8G8B8A8_UNORM_SRGB:
+            resourceFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+            break;
+        case RHI::Format::B8G8R8A8_UNORM_SRGB:
+            resourceFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+            rtvFormat = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            break;
+        case RHI::Format::R16G16B16A16_FLOAT:
+            resourceFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            rtvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            break;
+        default:
+            return false;
+        }
+
+        ComPtr<IDXGIFactory4> factory;
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
+
+        UINT presentSyncInterval = 1;
+        UINT presentFlags = 0;
+        UINT swapchainFlags = 0;
+        switch (desc.presentMode)
+        {
+        case RHI::PresentMode::Fifo:
+            break;
+        case RHI::PresentMode::Immediate:
+        {
+            ComPtr<IDXGIFactory5> factory5;
+            BOOL tearingSupported = FALSE;
+            if (FAILED(factory.As(&factory5)) || factory5 == nullptr ||
+                FAILED(factory5->CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                    &tearingSupported,
+                    sizeof(tearingSupported))) ||
+                tearingSupported == FALSE)
+            {
+                return false;
+            }
+            presentSyncInterval = 0;
+            presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+            swapchainFlags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+            break;
+        }
+        case RHI::PresentMode::Mailbox:
+        default:
+            return false;
+        }
+
+        RECT clientRect = {};
+        if (!GetClientRect(m_internal->windowHandle, &clientRect) ||
+            clientRect.right <= clientRect.left ||
+            clientRect.bottom <= clientRect.top)
+        {
+            return false;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 requestedDesc = {};
+        requestedDesc.BufferCount = std::max(desc.minimumImageCount, 2u);
+        requestedDesc.Width = static_cast<UINT>(clientRect.right - clientRect.left);
+        requestedDesc.Height = static_cast<UINT>(clientRect.bottom - clientRect.top);
+        requestedDesc.Format = resourceFormat;
+        requestedDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        requestedDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        requestedDesc.SampleDesc.Count = 1;
+        requestedDesc.Flags = swapchainFlags;
+
+        ComPtr<IDXGISwapChain1> swapchain1;
+        ComPtr<IDXGISwapChain3> swapchain3;
+        if (FAILED(factory->CreateSwapChainForHwnd(
+                m_internal->commandQueue.Get(),
+                m_internal->windowHandle,
+                &requestedDesc,
+                nullptr,
+                nullptr,
+                &swapchain1)) ||
+            FAILED(swapchain1.As(&swapchain3)))
+        {
+            return false;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 actualDesc = {};
+        if (FAILED(swapchain3->GetDesc1(&actualDesc)) ||
+            actualDesc.BufferCount < desc.minimumImageCount ||
+            actualDesc.Format != resourceFormat)
+        {
+            return false;
+        }
+
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;
+        std::vector<std::unique_ptr<D3D12Texture>> backBufferTextures;
+        if (!CreateBackBufferViews(
+                m_internal,
+                swapchain3.Get(),
+                actualFormat,
+                resourceFormat,
+                rtvFormat,
+                rtvHeap,
+                backBufferTextures))
+        {
+            return false;
+        }
+
+        m_internal->swapChain = std::move(swapchain3);
+        m_internal->rtvHeap = std::move(rtvHeap);
+        m_internal->backBufferTextures = std::move(backBufferTextures);
+        m_internal->imageCompletionValues.assign(actualDesc.BufferCount, 0);
+        m_internal->presentSyncInterval = presentSyncInterval;
+        m_internal->presentFlags = presentFlags;
+        m_internal->swapchainFlags = swapchainFlags;
+        m_internal->swapchainResourceFormat = resourceFormat;
+        m_internal->swapchainRtvFormat = rtvFormat;
+        m_internal->swapchainFormat = actualFormat;
+        m_internal->swapchainDesc = desc;
+        m_internal->activeImageIndex = m_internal->swapChain->GetCurrentBackBufferIndex();
+        m_internal->swapchainReady =
+            m_internal->activeImageIndex < m_internal->backBufferTextures.size();
+        return m_internal->swapchainReady;
+    }
+
+    bool D3D12Device::BeginFrame()
+    {
+        if (m_internal == nullptr || !m_internal->swapchainReady ||
+            m_internal->submissionFaulted || m_internal->frameReady ||
+            m_internal->frameSubmitted || m_internal->frames.empty())
+        {
+            return false;
+        }
+
+        const uint64_t completedValue = m_internal->fence->GetCompletedValue();
+        if (completedValue == std::numeric_limits<uint64_t>::max())
+        {
+            m_internal->submissionFaulted = true;
+            return false;
+        }
+        m_internal->submissions.erase(
+            std::remove_if(
+                m_internal->submissions.begin(),
+                m_internal->submissions.end(),
+                [completedValue](const D3D12SubmissionRecord& submission)
+                {
+                    return submission.completionValue <= completedValue;
+                }),
+            m_internal->submissions.end());
+
+        RECT clientRect = {};
+        if (!GetClientRect(m_internal->windowHandle, &clientRect) ||
+            clientRect.right <= clientRect.left ||
+            clientRect.bottom <= clientRect.top)
+        {
+            return false;
+        }
+        const uint32_t width = static_cast<uint32_t>(
+            clientRect.right - clientRect.left);
+        const uint32_t height = static_cast<uint32_t>(
+            clientRect.bottom - clientRect.top);
+
+        if (m_internal->backBufferTextures.empty())
+        {
+            ComPtr<ID3D12DescriptorHeap> rtvHeap;
+            std::vector<std::unique_ptr<D3D12Texture>> backBufferTextures;
+            if (!CreateBackBufferViews(
+                    m_internal,
+                    m_internal->swapChain.Get(),
+                    m_internal->swapchainFormat,
+                    m_internal->swapchainResourceFormat,
+                    m_internal->swapchainRtvFormat,
+                    rtvHeap,
+                    backBufferTextures))
+            {
+                return false;
+            }
+            m_internal->rtvHeap = std::move(rtvHeap);
+            m_internal->backBufferTextures = std::move(backBufferTextures);
+            m_internal->imageCompletionValues.assign(
+                m_internal->backBufferTextures.size(), 0);
+        }
+
+        const RHI::TextureDesc& backBufferDesc =
+            m_internal->backBufferTextures.front()->GetDesc();
+        if (backBufferDesc.width != width || backBufferDesc.height != height)
+        {
+            for (const D3D12FrameSlot& frame : m_internal->frames)
+            {
+                if (frame.completionValue > completedValue) return false;
+            }
+            for (uint64_t completionValue : m_internal->imageCompletionValues)
+            {
+                if (completionValue > completedValue) return false;
+            }
+            for (const std::unique_ptr<D3D12CommandList>& commandList :
+                m_internal->activeCommandLists)
+            {
+                if (!commandList->GetReferencedSwapchainImages().empty()) return false;
+            }
+
+            const UINT imageCount = static_cast<UINT>(
+                m_internal->imageCompletionValues.size());
+            if (imageCount < m_internal->swapchainDesc.minimumImageCount)
+            {
+                return false;
+            }
+
+            m_internal->backBufferTextures.clear();
+            m_internal->rtvHeap.Reset();
+            if (FAILED(m_internal->swapChain->ResizeBuffers(
+                    imageCount,
+                    width,
+                    height,
+                    m_internal->swapchainResourceFormat,
+                    m_internal->swapchainFlags)))
+            {
+                ComPtr<ID3D12DescriptorHeap> rtvHeap;
+                std::vector<std::unique_ptr<D3D12Texture>> backBufferTextures;
+                if (CreateBackBufferViews(
+                        m_internal,
+                        m_internal->swapChain.Get(),
+                        m_internal->swapchainFormat,
+                        m_internal->swapchainResourceFormat,
+                        m_internal->swapchainRtvFormat,
+                        rtvHeap,
+                        backBufferTextures))
+                {
+                    m_internal->rtvHeap = std::move(rtvHeap);
+                    m_internal->backBufferTextures = std::move(backBufferTextures);
+                    m_internal->imageCompletionValues.assign(
+                        m_internal->backBufferTextures.size(), 0);
+                }
+                return false;
+            }
+
+            ComPtr<ID3D12DescriptorHeap> rtvHeap;
+            std::vector<std::unique_ptr<D3D12Texture>> backBufferTextures;
+            const RHI::Format format =
+                m_internal->swapchainDesc.format == RHI::Format::Unknown
+                    ? m_internal->swapchainFormat
+                    : m_internal->swapchainDesc.format;
+            if (!CreateBackBufferViews(
+                    m_internal,
+                    m_internal->swapChain.Get(),
+                    format,
+                    m_internal->swapchainResourceFormat,
+                    m_internal->swapchainRtvFormat,
+                    rtvHeap,
+                    backBufferTextures))
+            {
+                return false;
+            }
+            m_internal->rtvHeap = std::move(rtvHeap);
+            m_internal->backBufferTextures = std::move(backBufferTextures);
+            m_internal->imageCompletionValues.assign(
+                m_internal->backBufferTextures.size(), 0);
+        }
+
+        const uint32_t imageIndex = m_internal->swapChain->GetCurrentBackBufferIndex();
+        if (m_internal->nextFrameIndex >= m_internal->frames.size() ||
+            imageIndex >= m_internal->imageCompletionValues.size() ||
+            m_internal->frames[m_internal->nextFrameIndex].completionValue > completedValue ||
+            m_internal->imageCompletionValues[imageIndex] > completedValue)
+        {
+            return false;
+        }
+
+        m_internal->activeFrameIndex = m_internal->nextFrameIndex;
+        m_internal->activeImageIndex = imageIndex;
+        m_internal->frameReady = true;
+        return true;
+    }
+
+    RHI::ICommandList* D3D12Device::AcquireCommandList()
+    {
+        if (m_internal == nullptr || m_internal->device == nullptr ||
+            m_internal->submissionFaulted)
+        {
+            return nullptr;
+        }
+
+        const uint64_t completedValue = m_internal->fence->GetCompletedValue();
+        if (completedValue == std::numeric_limits<uint64_t>::max())
+        {
+            m_internal->submissionFaulted = true;
+            return nullptr;
+        }
+        m_internal->submissions.erase(
+            std::remove_if(
+                m_internal->submissions.begin(),
+                m_internal->submissions.end(),
+                [completedValue](const D3D12SubmissionRecord& submission)
+                {
+                    return submission.completionValue <= completedValue;
+                }),
+            m_internal->submissions.end());
+
+        auto commandList = std::make_unique<D3D12CommandList>(
+            m_internal->device.Get(),
+            m_internal->globalDescriptorHeap.Get(),
+            m_internal->srvDescriptorSize);
+        if (commandList->GetNativeList() == nullptr) return nullptr;
+        D3D12CommandList* result = commandList.get();
+        m_internal->activeCommandLists.push_back(std::move(commandList));
+        return result;
+    }
+
+    bool D3D12Device::Submit(RHI::ICommandList** cmdLists, uint32_t count)
+    {
+        if (m_internal == nullptr || m_internal->submissionFaulted ||
+            cmdLists == nullptr || count == 0)
+        {
+            return false;
+        }
+
+        D3D12Texture* activeBackBuffer = nullptr;
+        if (m_internal->frameReady &&
+            m_internal->activeImageIndex < m_internal->backBufferTextures.size())
+        {
+            activeBackBuffer =
+                m_internal->backBufferTextures[m_internal->activeImageIndex].get();
+        }
+
+        std::vector<D3D12CommandList*> submittedCommandLists;
+        submittedCommandLists.reserve(count);
+        std::vector<ID3D12CommandList*> nativeCommandLists;
+        nativeCommandLists.reserve(count);
+        bool frameSubmission = false;
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            if (cmdLists[index] == nullptr) return false;
+            for (uint32_t previous = 0; previous < index; ++previous)
+            {
+                if (cmdLists[previous] == cmdLists[index]) return false;
+            }
+
+            const auto owned = std::find_if(
+                m_internal->activeCommandLists.begin(),
+                m_internal->activeCommandLists.end(),
+                [command = cmdLists[index]](const std::unique_ptr<D3D12CommandList>& candidate)
+                {
+                    return candidate.get() == command;
+                });
+            if (owned == m_internal->activeCommandLists.end()) return false;
+
+            D3D12CommandList* commandList = owned->get();
+            if (!commandList->IsClosed() ||
+                commandList->GetNativeList() == nullptr)
+            {
+                return false;
+            }
+
+            for (D3D12Texture* image : commandList->GetReferencedSwapchainImages())
+            {
+                if (activeBackBuffer == nullptr || image != activeBackBuffer)
+                {
+                    return false;
+                }
+                frameSubmission = true;
+            }
+
+            submittedCommandLists.push_back(commandList);
+            nativeCommandLists.push_back(
+                static_cast<ID3D12CommandList*>(commandList->GetNativeList()));
+        }
+
+        m_internal->submissions.emplace_back();
+        D3D12SubmissionRecord& submission = m_internal->submissions.back();
+        submission.completionValue = m_internal->nextCompletionValue++;
+        submission.commandLists.reserve(count);
+        for (D3D12CommandList* commandList : submittedCommandLists)
+        {
+            const auto owned = std::find_if(
+                m_internal->activeCommandLists.begin(),
+                m_internal->activeCommandLists.end(),
+                [commandList](const std::unique_ptr<D3D12CommandList>& candidate)
+                {
+                    return candidate.get() == commandList;
+                });
+            submission.commandLists.push_back(std::move(*owned));
+            m_internal->activeCommandLists.erase(owned);
+        }
+
+        m_internal->commandQueue->ExecuteCommandLists(
+            count, nativeCommandLists.data());
+        if (FAILED(m_internal->commandQueue->Signal(
+                m_internal->fence.Get(), submission.completionValue)))
+        {
+            submission.completionValue = std::numeric_limits<uint64_t>::max();
+            m_internal->submissionFaulted = true;
+            if (frameSubmission) m_internal->frameReady = false;
+            return false;
+        }
+
+        if (frameSubmission)
+        {
+            m_internal->frames[m_internal->activeFrameIndex].completionValue =
+                submission.completionValue;
+            m_internal->imageCompletionValues[m_internal->activeImageIndex] =
+                submission.completionValue;
+            m_internal->nextFrameIndex =
+                (m_internal->activeFrameIndex + 1) %
+                static_cast<uint32_t>(m_internal->frames.size());
+            m_internal->frameReady = false;
+            m_internal->frameSubmitted = true;
+        }
         DumpInfoQueue(m_internal, "Submit");
+        return true;
     }
-    void D3D12Device::Present() {
-        DumpInfoQueue(m_internal, "Present");
 
-        // 1. 현재 프레임이 끝났음을 나타내기 위해 Fence를 Signal
-        const uint64_t currentFenceValue = m_internal->fenceValue;
-        m_internal->commandQueue->Signal(m_internal->fence.Get(), currentFenceValue);
-        m_internal->frameFenceValues[m_internal->frameIndex] = currentFenceValue;
-        m_internal->fenceValue++;
-
-        // 2. 화면 표시 (Present)
-        m_internal->swapChain->Present(1, 0);
-
-        // 3. 다음 프레임 버퍼 인덱스 갱신
-        m_internal->frameIndex = m_internal->swapChain->GetCurrentBackBufferIndex();
-
-        // 4. 다음 프레임이 사용할 백버퍼의 이전 GPU 작업이 완료되었는지 확인하고 대기 (Busy-wait)
-        const uint64_t waitFenceValue = m_internal->frameFenceValues[m_internal->frameIndex];
-        while (m_internal->fence->GetCompletedValue() < waitFenceValue) {
-            std::this_thread::yield();
+    void D3D12Device::Present()
+    {
+        if (m_internal == nullptr || m_internal->submissionFaulted ||
+            !m_internal->frameSubmitted)
+        {
+            return;
         }
 
-        // 5. 대기가 완료되었으므로, 해당 프레임에 사용했던 임시 업로드 리소스를 지연 해제
-        m_internal->frameUploadBuffers[m_internal->frameIndex].clear();
-        m_internal->frameUploadAllocators[m_internal->frameIndex].clear();
-        m_internal->frameUploadCommandLists[m_internal->frameIndex].clear();
+        const HRESULT result = m_internal->swapChain->Present(
+            m_internal->presentSyncInterval,
+            m_internal->presentFlags);
+        m_internal->frameSubmitted = false;
+        if (FAILED(result)) m_internal->submissionFaulted = true;
+        DumpInfoQueue(m_internal, "Present");
     }
 
     RHI::IBuffer* D3D12Device::CreateBuffer(const RHI::BufferDesc& desc) { 
@@ -468,10 +868,10 @@ namespace dy::Backends
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = hasPixelShader ? 1u : 0u;
         if (hasPixelShader) {
-            const RHI::Format rtvFormat = desc.renderTargetFormat == RHI::Format::Unknown
-                ? RHI::Format::R8G8B8A8_UNORM
-                : desc.renderTargetFormat;
-            psoDesc.RTVFormats[0] = static_cast<DXGI_FORMAT>(D3D12Texture::ToDxgiFormat(rtvFormat));
+            if (desc.renderTargetFormat == RHI::Format::Unknown) return nullptr;
+            psoDesc.RTVFormats[0] = static_cast<DXGI_FORMAT>(
+                D3D12Texture::ToDxgiFormat(desc.renderTargetFormat));
+            if (psoDesc.RTVFormats[0] == DXGI_FORMAT_UNKNOWN) return nullptr;
         }
         psoDesc.SampleDesc.Count = 1;
 
@@ -552,8 +952,14 @@ namespace dy::Backends
     }
 
     bool D3D12Device::UpdateTexture(RHI::ITexture* texture, const void* data, uint32_t rowPitch) {
+        if (m_internal == nullptr || texture == nullptr || data == nullptr ||
+            rowPitch == 0 || m_internal->submissionFaulted)
+        {
+            return false;
+        }
         auto d3dTexture = static_cast<D3D12Texture*>(texture);
         ID3D12Resource* destResource = static_cast<ID3D12Resource*>(d3dTexture->GetNativeResource());
+        if (destResource == nullptr) return false;
 
         D3D12_RESOURCE_DESC desc = destResource->GetDesc();
         UINT64 requiredSize = 0;
@@ -569,15 +975,25 @@ namespace dy::Backends
             &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, 
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
         
-        if (FAILED(hr)) {
-            std::cout << "[D3D12Device] Failed to create uploadBuffer! HR=" << std::hex << hr << std::endl;
-        }
+        if (FAILED(hr)) return false;
 
         // 임시 커맨드 리스트 생성
         ComPtr<ID3D12CommandAllocator> alloc;
-        m_internal->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc));
+        if (FAILED(m_internal->device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))))
+        {
+            return false;
+        }
         ComPtr<ID3D12GraphicsCommandList> cmdList;
-        m_internal->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&cmdList));
+        if (FAILED(m_internal->device->CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                alloc.Get(),
+                nullptr,
+                IID_PPV_ARGS(&cmdList))))
+        {
+            return false;
+        }
 
         // d3dx12.h 헬퍼를 사용해 완벽한 복사 수행
         D3D12_SUBRESOURCE_DATA subresourceData = {};
@@ -586,12 +1002,7 @@ namespace dy::Backends
         subresourceData.SlicePitch = rowPitch * desc.Height;
 
         UINT64 bytesCopied = UpdateSubresources(cmdList.Get(), destResource, uploadBuffer.Get(), 0, 0, 1, &subresourceData);
-        if (bytesCopied == 0) {
-            std::cout << "[D3D12Device] UpdateSubresources FAILED (0 bytes copied)!" << std::endl;
-        }
-        if (bytesCopied == 0) {
-            std::cout << "[D3D12Device] UpdateSubresources FAILED (0 bytes copied)!" << std::endl;
-        }
+        if (bytesCopied == 0) return false;
 
         // 텍스처 상태 변경: COPY_DEST -> PIXEL_SHADER_RESOURCE
         D3D12_RESOURCE_BARRIER barrier = {};
@@ -602,17 +1013,25 @@ namespace dy::Backends
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         cmdList->ResourceBarrier(1, &barrier);
 
-        cmdList->Close();
+        if (FAILED(cmdList->Close())) return false;
+
+        m_internal->submissions.emplace_back();
+        D3D12SubmissionRecord& submission = m_internal->submissions.back();
+        submission.completionValue = m_internal->nextCompletionValue++;
+        submission.retainedObjects.push_back(uploadBuffer);
+        submission.retainedObjects.push_back(alloc);
+        submission.retainedObjects.push_back(cmdList);
 
         // 커맨드 실행
         ID3D12CommandList* lists[] = { cmdList.Get() };
         m_internal->commandQueue->ExecuteCommandLists(1, lists);
-
-        // 임시 업로드 버퍼와 커맨드 리스트/할당자가 즉시 파괴되는 것을 막기 위해 지연 소멸 큐에 등록합니다.
-        // 다음 프레임 버퍼가 다 돌아와 대기가 완료될 때 안전하게 해제됩니다.
-        m_internal->frameUploadBuffers[m_internal->frameIndex].push_back(uploadBuffer);
-        m_internal->frameUploadAllocators[m_internal->frameIndex].push_back(alloc);
-        m_internal->frameUploadCommandLists[m_internal->frameIndex].push_back(cmdList);
+        if (FAILED(m_internal->commandQueue->Signal(
+                m_internal->fence.Get(), submission.completionValue)))
+        {
+            submission.completionValue = std::numeric_limits<uint64_t>::max();
+            m_internal->submissionFaulted = true;
+            return false;
+        }
         
         d3dTexture->SetResourceState(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         return true;
@@ -626,7 +1045,17 @@ namespace dy::Backends
 
     void D3D12Device::DestroyPipelineState(RHI::IPipelineState* pipeline) { delete pipeline; }
 
-    RHI::ITexture* D3D12Device::GetBackBuffer() { 
-        return m_internal->backBufferTextures[m_internal->frameIndex]; 
+    RHI::ITexture* D3D12Device::GetBackBuffer() {
+        if (m_internal == nullptr || !m_internal->swapchainReady ||
+            m_internal->backBufferTextures.empty())
+        {
+            return nullptr;
+        }
+        const uint32_t imageIndex = (m_internal->frameReady || m_internal->frameSubmitted)
+            ? m_internal->activeImageIndex
+            : m_internal->swapChain->GetCurrentBackBufferIndex();
+        return imageIndex < m_internal->backBufferTextures.size()
+            ? m_internal->backBufferTextures[imageIndex].get()
+            : nullptr;
     }
 }

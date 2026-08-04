@@ -1,19 +1,18 @@
 #pragma once
 #include <cstddef>
+#include <vector>
 #include "RHI/ICommandList.h"
 
 namespace dy::Backends
 {
     struct D3D12CommandListInternal;
+    class D3D12Texture;
 
     class D3D12CommandList : public RHI::ICommandList
     {
     public:
-        // 디바이스, 백버퍼 리소스, RTV 핸들 주소를 받습니다.
-        D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr, void* globalDescriptorHeap = nullptr, uint32_t srvDescriptorSize = 0);
+        D3D12CommandList(void* nativeDevice, void* globalDescriptorHeap = nullptr, uint32_t srvDescriptorSize = 0);
         ~D3D12CommandList() override;
-
-        void Reset();
 
         void BindGraphicsPipeline(RHI::IPipelineState* pipelineState) override;
 
@@ -39,10 +38,10 @@ namespace dy::Backends
         void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
 
         void Close() override;
-        void SetDepthStencilView(size_t dsvHandlePtr);
-        void SetBackBufferTexture(RHI::ITexture* texture); // Close 에서 백버퍼 상태를 추적기로 전이하기 위함
 
         void* GetNativeList(); // 디바이스가 가져가기 위한 함수
+        [[nodiscard]] bool IsClosed() const;
+        [[nodiscard]] const std::vector<D3D12Texture*>& GetReferencedSwapchainImages() const;
 
     private:
         D3D12CommandListInternal* m_internal;

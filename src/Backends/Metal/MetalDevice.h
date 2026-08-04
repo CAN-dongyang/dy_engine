@@ -10,11 +10,11 @@ namespace dy::Backends
         MetalDevice();
         ~MetalDevice() override;
 
-        void BeginFrame() override;
-        uint32_t GetCurrentFrameIndex() const override;
+        [[nodiscard]] bool CreateSwapchain(const RHI::SwapchainDesc& desc) override;
+        bool BeginFrame() override;
 
         RHI::ICommandList* AcquireCommandList() override;
-        void Submit(RHI::ICommandList** cmdLists, uint32_t count) override;
+        bool Submit(RHI::ICommandList** cmdLists, uint32_t count) override;
         void Present() override;
 
         RHI::IBuffer*        CreateBuffer(const RHI::BufferDesc& desc) override;

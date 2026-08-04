@@ -8,7 +8,6 @@
 #include <cstring>
 #include <vector>
 #import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
 
 namespace dy::Backends
 {
@@ -44,13 +43,14 @@ namespace dy::Backends
         id<MTLCommandBuffer>         commandBuffer  = nil;
         id<MTLRenderCommandEncoder>  encoder        = nil;
         MTLRenderPassDescriptor*     passDescriptor = nil;
-        id<CAMetalDrawable>          drawable       = nil;
         std::vector<id<MTLTexture>>  textures;
         RHI::GeometryBinding         geometry       = {};
         std::array<uint8_t, kMaxPushConstantBytes> inlineConstants = {};
         uint32_t                     inlineConstantSize = 0;
         uint32_t                     renderWidth = 1;
         uint32_t                     renderHeight = 1;
+        bool                         closed = false;
+        bool                         usesBackBuffer = false;
     };
 
     MetalCommandList::MetalCommandList(void* commandQueue)
@@ -61,20 +61,44 @@ namespace dy::Backends
 
     MetalCommandList::~MetalCommandList()
     {
+        Reset();
         delete m_impl;
     }
 
-    void MetalCommandList::Begin(void* drawable)
+    bool MetalCommandList::Begin()
     {
-        m_impl->drawable      = (__bridge id<CAMetalDrawable>)drawable;
-        m_impl->commandBuffer = [m_impl->commandQueue commandBuffer];
-        m_impl->encoder       = nil;
-        m_impl->passDescriptor = nil;
+        Reset();
+
+        id<MTLCommandBuffer> commandBuffer = [m_impl->commandQueue commandBuffer];
+        if(commandBuffer == nil) return false;
+#if !__has_feature(objc_arc)
+        [commandBuffer retain];
+#endif
+        m_impl->commandBuffer = commandBuffer;
         m_impl->geometry = {};
         m_impl->inlineConstants = {};
         m_impl->inlineConstantSize = 0;
         m_impl->renderWidth = 1;
         m_impl->renderHeight = 1;
+        m_impl->closed = false;
+        m_impl->usesBackBuffer = false;
+        return true;
+    }
+
+    void MetalCommandList::Reset()
+    {
+        if(m_impl == nullptr) return;
+        if(m_impl->encoder != nil)
+            [m_impl->encoder endEncoding];
+#if !__has_feature(objc_arc)
+        [m_impl->passDescriptor release];
+        [m_impl->commandBuffer release];
+#endif
+        m_impl->encoder = nil;
+        m_impl->passDescriptor = nil;
+        m_impl->commandBuffer = nil;
+        m_impl->closed = false;
+        m_impl->usesBackBuffer = false;
     }
 
     void MetalCommandList::SetRenderTargets(uint32_t numRenderTargets, RHI::ITexture** renderTargets, RHI::ITexture* depthStencil)
@@ -84,32 +108,23 @@ namespace dy::Backends
             [m_impl->encoder endEncoding];
             m_impl->encoder = nil;
         }
+#if !__has_feature(objc_arc)
+        [m_impl->passDescriptor release];
+#endif
+        m_impl->passDescriptor = nil;
 
         MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor new];
         uint32_t width = 1;
         uint32_t height = 1;
 
-        if(numRenderTargets == 0 || renderTargets == nullptr)
-        {
-            if(depthStencil == nullptr && m_impl->drawable != nil)
-            {
-                passDesc.colorAttachments[0].texture     = m_impl->drawable.texture;
-                passDesc.colorAttachments[0].loadAction  = MTLLoadActionClear;
-                passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-                passDesc.colorAttachments[0].clearColor  = MTLClearColorMake(0.08, 0.10, 0.14, 1.0);
-                width = static_cast<uint32_t>(m_impl->drawable.texture.width);
-                height = static_cast<uint32_t>(m_impl->drawable.texture.height);
-            }
-        }
-        else
+        if(numRenderTargets > 0 && renderTargets != nullptr)
         {
             for(uint32_t i = 0; i < numRenderTargets; i++)
             {
                 auto* tex = static_cast<MetalTexture*>(renderTargets[i]);
+                if(tex->IsSwapchainImage())
+                    m_impl->usesBackBuffer = true;
                 id<MTLTexture> mtlTex = (__bridge id<MTLTexture>)tex->GetNativeTexture();
-
-                if(mtlTex == nil)
-                    mtlTex = m_impl->drawable.texture;
 
                 passDesc.colorAttachments[i].texture     = mtlTex;
                 passDesc.colorAttachments[i].loadAction  = MTLLoadActionClear;
@@ -329,6 +344,7 @@ namespace dy::Backends
             [m_impl->encoder endEncoding];
             m_impl->encoder = nil;
         }
+        m_impl->closed = true;
     }
 
     void MetalCommandList::SetNativePipelineState(void* pipelineState)
@@ -372,33 +388,32 @@ namespace dy::Backends
 
     void MetalCommandList::EnsureRenderEncoder()
     {
-        if(m_impl->encoder != nil)
+        if(m_impl->encoder != nil || m_impl->commandBuffer == nil)
             return;
 
-        if(m_impl->passDescriptor == nil)
-        {
-            MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor new];
-            passDesc.colorAttachments[0].texture     = m_impl->drawable.texture;
-            passDesc.colorAttachments[0].loadAction  = MTLLoadActionClear;
-            passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-            passDesc.colorAttachments[0].clearColor  = MTLClearColorMake(0.08, 0.10, 0.14, 1.0);
-            m_impl->passDescriptor = passDesc;
-            if(m_impl->drawable != nil)
-            {
-                m_impl->renderWidth = static_cast<uint32_t>(m_impl->drawable.texture.width);
-                m_impl->renderHeight = static_cast<uint32_t>(m_impl->drawable.texture.height);
-            }
-        }
+        if(m_impl->passDescriptor == nil) return;
 
         m_impl->encoder = [m_impl->commandBuffer renderCommandEncoderWithDescriptor:m_impl->passDescriptor];
+        if(m_impl->encoder == nil) return;
         MTLViewport viewport = { 0.0, 0.0, static_cast<double>(m_impl->renderWidth), static_cast<double>(m_impl->renderHeight), 0.0, 1.0 };
         MTLScissorRect scissor = { 0, 0, m_impl->renderWidth, m_impl->renderHeight };
         [m_impl->encoder setViewport:viewport];
         [m_impl->encoder setScissorRect:scissor];
     }
 
+    bool MetalCommandList::IsClosed() const
+    {
+        return m_impl->closed;
+    }
+
+    bool MetalCommandList::UsesBackBuffer() const
+    {
+        return m_impl->usesBackBuffer;
+    }
+
     void* MetalCommandList::GetNativeCommandBuffer() const
     {
         return (__bridge void*)m_impl->commandBuffer;
     }
+
 }

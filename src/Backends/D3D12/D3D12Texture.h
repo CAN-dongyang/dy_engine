@@ -16,7 +16,7 @@ namespace dy::Backends
     {
     public:
         D3D12Texture(ID3D12Device* device, const RHI::TextureDesc& desc);
-        D3D12Texture(ID3D12Resource* resource, const RHI::TextureDesc& desc);
+        D3D12Texture(ID3D12Resource* resource, const RHI::TextureDesc& desc, size_t rtvHandlePtr, bool swapchainImage);
         ~D3D12Texture() override;
 
         void* GetNativeResource() const;
@@ -24,6 +24,7 @@ namespace dy::Backends
         bool HasDepthStencilView() const;
         size_t GetRenderTargetViewHandlePtr() const;
         size_t GetDepthStencilViewHandlePtr() const;
+        bool IsSwapchainImage() const;
         uint32_t GetResourceState() const;
         void SetResourceState(uint32_t state);
 

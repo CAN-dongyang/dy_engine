@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -127,12 +128,40 @@ namespace {
 		switch (format)
 		{
 		case dy::RHI::Format::R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+		case dy::RHI::Format::B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
+		case dy::RHI::Format::R8G8B8A8_UNORM_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
+		case dy::RHI::Format::B8G8R8A8_UNORM_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
 		case dy::RHI::Format::R16G16B16A16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
 		case dy::RHI::Format::R32G32B32A32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
 		case dy::RHI::Format::R32_UINT: return VK_FORMAT_R32_UINT;
 		case dy::RHI::Format::D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
 		case dy::RHI::Format::D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
 		default: return VK_FORMAT_UNDEFINED;
+		}
+	}
+
+	dy::RHI::Format ToRhiColorFormat(VkFormat format)
+	{
+		switch (format)
+		{
+		case VK_FORMAT_R8G8B8A8_UNORM: return dy::RHI::Format::R8G8B8A8_UNORM;
+		case VK_FORMAT_B8G8R8A8_UNORM: return dy::RHI::Format::B8G8R8A8_UNORM;
+		case VK_FORMAT_R8G8B8A8_SRGB: return dy::RHI::Format::R8G8B8A8_UNORM_SRGB;
+		case VK_FORMAT_B8G8R8A8_SRGB: return dy::RHI::Format::B8G8R8A8_UNORM_SRGB;
+		case VK_FORMAT_R16G16B16A16_SFLOAT: return dy::RHI::Format::R16G16B16A16_FLOAT;
+		case VK_FORMAT_R32G32B32A32_SFLOAT: return dy::RHI::Format::R32G32B32A32_FLOAT;
+		default: return dy::RHI::Format::Unknown;
+		}
+	}
+
+	VkPresentModeKHR ToVkPresentMode(dy::RHI::PresentMode presentMode)
+	{
+		switch (presentMode)
+		{
+		case dy::RHI::PresentMode::Immediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+		case dy::RHI::PresentMode::Mailbox: return VK_PRESENT_MODE_MAILBOX_KHR;
+		case dy::RHI::PresentMode::Fifo: return VK_PRESENT_MODE_FIFO_KHR;
+		default: return VK_PRESENT_MODE_MAX_ENUM_KHR;
 		}
 	}
 
@@ -412,6 +441,16 @@ namespace {
 		bool IsShadowPassEnabled() const { return m_shadowPassEnabled; }
 		bool UsesBindlessTextures() const { return m_bindlessTexturesEnabled; }
 
+		void RemoveRenderPass(VkRenderPass renderPass)
+		{
+			const auto it = std::remove_if(m_pipelineCache.begin(), m_pipelineCache.end(), [this, renderPass](PipelineCacheEntry& entry) {
+				if (entry.renderPass != renderPass) return false;
+				entry.pipeline.Cleanup(m_device);
+				return true;
+			});
+			m_pipelineCache.erase(it, m_pipelineCache.end());
+		}
+
 	private:
 		struct PipelineCacheEntry
 		{
@@ -526,14 +565,14 @@ namespace {
 
 struct VulkanDevice::Impl
 {
-	explicit Impl(VulkanDevice& owner);
+	Impl() = default;
 	~Impl();
 
 	int Initialize(const void* windowHandle, const dy::RHI::DeviceDesc& desc);
-	void BeginFrame();
-	uint32_t GetCurrentFrameIndex() const { return m_currentFrameIndex; }
-	dy::RHI::ICommandList* AcquireCommandList() { return m_commandList; }
-	void Submit(dy::RHI::ICommandList** cmdLists, uint32_t count);
+	bool CreateSwapchain(const dy::RHI::SwapchainDesc& desc, VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
+	bool BeginFrame();
+	dy::RHI::ICommandList* AcquireCommandList();
+	bool Submit(dy::RHI::ICommandList** cmdLists, uint32_t count);
 	void Present();
 
 	dy::RHI::IBuffer* CreateBuffer(const dy::RHI::BufferDesc& desc);
@@ -548,13 +587,11 @@ struct VulkanDevice::Impl
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer();
 
 private:
-	const dy::RHI::DeviceDesc& GetDesc() const { return m_owner.GetDesc(); }
-
 	bool CreateInstance();
 	bool CreateSurface();
 	bool PickPhysicalDevice();
 	bool CreateLogicalDevice();
-	bool CreateSyncObjects();
+	bool CreateSwapchainSyncObjects();
 	bool CreateDescriptorSetLayout();
 	bool CreateBindlessDescriptorSetLayout();
 	bool CreateDescriptorPool();
@@ -564,7 +601,6 @@ private:
 	bool CreateDepthResources();
 	bool CreateFramebuffers();
 	bool CreateCommandPool();
-	bool CreateCommandBuffer();
 	bool CreateFallbackTexture();
 
 	bool CreateShadowMapResources();
@@ -572,25 +608,30 @@ private:
 	bool CreateShadowPipeline(const dy::RHI::GraphicsPipelineDesc& desc);
 	void DestroyShadowResources();
 
-	void RecreateSwapchain();
+	bool RecreateSwapchain();
+	VkSwapchainKHR RetireSwapchainGeneration();
+	void DestroyRetiredSwapchainGenerations();
+	void DestroySwapchainSyncObjects();
 	void DestroySwapchainResources();
 	void DestroyDeviceResources();
 
-	void RecordCommandBuffer(const VulkanCommandList& commandList);
-	void RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
-	void RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
+	bool RecordCommandBuffer(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t descriptorOffset);
+	void RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t descriptorOffset);
+	bool RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t descriptorOffset);
 	bool ResolveMainPassTarget(const VulkanCommandList& commandList, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool GetOrCreateOffscreenFramebuffer(dy::RHI::ITexture* colorTarget, dy::RHI::ITexture* depthTarget, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool CreateOffscreenRenderPass(VkFormat colorFormat, VkFormat depthFormat, VkImageLayout colorFinalLayout, VkRenderPass& renderPass);
 	void DestroyRenderTargetCache();
-	bool UpdateDrawDescriptorSets(const VulkanCommandList& commandList);
-	bool UpdateDrawDescriptorSet(const VulkanCommandList::DrawCall& drawCall, uint32_t drawIndex);
+	bool UpdateDrawDescriptorSets(const VulkanCommandList& commandList, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t descriptorOffset);
+	bool UpdateDrawDescriptorSet(const VulkanCommandList::DrawCall& drawCall, VkDescriptorSet descriptorSet);
 	bool InitializeBindlessDescriptorSet();
 	void UpdateBackBufferMetadata();
+	void CollectCompletedSubmissions();
+	bool UsesSwapchain(const VulkanCommandList& commandList) const;
+	bool IsSwapchainTexture(const dy::RHI::ITexture* texture) const;
 	VkFormat FindDepthFormat() const;
 	bool IsDepthFormatSupported(VkFormat format) const;
 
-	VulkanDevice& m_owner;
 	VulkanContext m_context;
 	VulkanSwapchain m_swapchain;
 	VkRenderPass m_mainRenderPass = VK_NULL_HANDLE;
@@ -598,7 +639,6 @@ private:
 	void* m_windowHandle = nullptr;
 
 	VkCommandPool m_commandPool = VK_NULL_HANDLE;
-	std::vector<VkCommandBuffer> m_commandBuffers;
 
 	VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
 
@@ -610,8 +650,20 @@ private:
 
 	std::vector<VkSemaphore> m_imageAvailableSemaphores;
 	std::vector<VkSemaphore> m_renderFinishedSemaphores;
-	std::vector<VkFence> m_inFlightFences;
+	std::vector<VkFence> m_frameSlots;
 	std::vector<VkFence> m_imagesInFlight;
+
+	struct SubmissionRecord
+	{
+		VkFence fence = VK_NULL_HANDLE;
+		VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+		std::vector<VkCommandBuffer> commandBuffers;
+		std::vector<std::unique_ptr<VulkanCommandList>> commandLists;
+		uint32_t frameSlot = std::numeric_limits<uint32_t>::max();
+		uint32_t imageIndex = std::numeric_limits<uint32_t>::max();
+	};
+	std::vector<SubmissionRecord> m_submissions;
+	std::vector<std::unique_ptr<VulkanCommandList>> m_acquiredCommandLists;
 
 	std::vector<VkFramebuffer> m_swapchainFramebuffers;
 	std::vector<dy::RHI::IBuffer*> m_ownedBuffers;
@@ -630,6 +682,19 @@ private:
 	};
 	std::vector<RenderTargetCacheEntry> m_renderTargetCache;
 
+	struct RetiredSwapchainGeneration
+	{
+		VulkanSwapchain swapchain;
+		VkRenderPass mainRenderPass = VK_NULL_HANDLE;
+		std::unique_ptr<VulkanTexture> depthTexture;
+		std::vector<VkFramebuffer> framebuffers;
+		std::vector<VkSemaphore> imageAvailableSemaphores;
+		std::vector<VkSemaphore> renderFinishedSemaphores;
+		std::vector<RenderTargetCacheEntry> renderTargetCache;
+		std::vector<std::unique_ptr<VulkanTexture>> backBuffers;
+	};
+	std::vector<RetiredSwapchainGeneration> m_retiredSwapchainGenerations;
+
 	VkRenderPass m_shadowRenderPass = VK_NULL_HANDLE;
 	VkFramebuffer m_shadowFramebuffer = VK_NULL_HANDLE;
 	VkPipelineLayout m_shadowPipelineLayout = VK_NULL_HANDLE;
@@ -643,15 +708,22 @@ private:
 	uint32_t m_defaultShadowMapResolution = dy::RHI::DeviceDesc{}.defaultShadowMapResolution;
 	uint32_t m_fallbackTextureWidth = kFallbackTextureWidth;
 	uint32_t m_fallbackTextureHeight = kFallbackTextureHeight;
-	uint64_t m_frameAcquireTimeoutNanoseconds = dy::RHI::DeviceDesc{}.frameAcquireTimeoutNanoseconds;
 	dy::RHI::ShaderLayoutDesc m_shaderLayout = {};
 	uint32_t m_currentFrameIndex = 0;
 	uint32_t m_currentImageIndex = 0;
+	uint32_t m_pendingPresentImageIndex = 0;
 	bool m_frameReady = false;
-	bool m_frameSubmitted = false;
+	bool m_imageAcquired = false;
+	bool m_presentPending = false;
+	bool m_swapchainNeedsRecreate = false;
+	bool m_recreateAfterPresent = false;
+	bool m_submissionFaulted = false;
+	bool m_hasSwapchainDesc = false;
+	VkSwapchainKHR m_recreationOldSwapchain = VK_NULL_HANDLE;
+	dy::RHI::SwapchainDesc m_swapchainDesc = {};
 	dy::RHI::DescriptorIndex m_nextDescriptorIndex = 0;
-	VulkanCommandList* m_commandList = nullptr;
 	dy::RHI::ITexture* m_backBuffer = nullptr;
+	std::vector<std::unique_ptr<VulkanTexture>> m_backBuffers;
 	dy::RHI::ITexture* m_fallbackTexture = nullptr;
 	dy::RHI::ITexture* m_depthTexture = nullptr;
 	dy::RHI::ITexture* m_shadowMapTexture = nullptr;
@@ -660,20 +732,20 @@ private:
 };
 
 VulkanDevice::VulkanDevice()
-	: m_impl(std::make_unique<Impl>(*this))
+	: m_impl(std::make_unique<Impl>())
 {
 }
 
 VulkanDevice::~VulkanDevice() = default;
 
-void VulkanDevice::BeginFrame()
+bool VulkanDevice::CreateSwapchain(const dy::RHI::SwapchainDesc& desc)
 {
-	m_impl->BeginFrame();
+	return m_impl->CreateSwapchain(desc);
 }
 
-uint32_t VulkanDevice::GetCurrentFrameIndex() const
+bool VulkanDevice::BeginFrame()
 {
-	return m_impl->GetCurrentFrameIndex();
+	return m_impl->BeginFrame();
 }
 
 dy::RHI::ICommandList* VulkanDevice::AcquireCommandList()
@@ -681,9 +753,9 @@ dy::RHI::ICommandList* VulkanDevice::AcquireCommandList()
 	return m_impl->AcquireCommandList();
 }
 
-void VulkanDevice::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count)
+bool VulkanDevice::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count)
 {
-	m_impl->Submit(cmdLists, count);
+	return m_impl->Submit(cmdLists, count);
 }
 
 void VulkanDevice::Present()
@@ -746,12 +818,6 @@ int VulkanDevice::Initialize(const void* windowHandle, const dy::RHI::DeviceDesc
 	return m_impl->Initialize(windowHandle, desc);
 }
 
-VulkanDevice::Impl::Impl(VulkanDevice& owner)
-	: m_owner(owner)
-{
-	m_commandList = new VulkanCommandList();
-}
-
 VulkanDevice::Impl::~Impl() {
 	DestroyDeviceResources();
 }
@@ -766,8 +832,8 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 	m_shadowMapResolution = m_defaultShadowMapResolution;
 	m_fallbackTextureWidth = kFallbackTextureWidth;
 	m_fallbackTextureHeight = kFallbackTextureHeight;
-	m_frameAcquireTimeoutNanoseconds = desc.frameAcquireTimeoutNanoseconds;
 	m_shaderLayout = desc.shaderLayout;
+	if (m_maxFramesInFlight == 0 || m_maxDrawsPerFrame == 0 || m_maxBindlessTextures == 0) return -1;
 
 	try {
 		if (!CreateInstance()) return -1;
@@ -776,9 +842,6 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 		if (!CreateLogicalDevice()) return -1;
 		if (!CreateCommandPool()) return -1;
 
-		m_swapchain.Initialize(m_context, m_windowHandle, dy::RHI::IsSrgbFormat(GetDesc().swapchainFormat));
-		UpdateBackBufferMetadata();
-
 		m_depthFormat = FindDepthFormat();
 		if (!CreateFallbackTexture()) return -1;
 		if (!CreateDescriptorSetLayout()) return -1;
@@ -786,17 +849,64 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 		if (!CreateDescriptorPool()) return -1;
 		if (!CreateDescriptorSets()) return -1;
 		if (!CreateBindlessDescriptorSet()) return -1;
-		if (!CreateMainRenderPass()) return -1;
-		if (!CreateDepthResources()) return -1;
-		if (!CreateFramebuffers()) return -1;
-		if (!CreateCommandBuffer()) return -1;
-		if (!CreateSyncObjects()) return -1;
+		m_frameSlots.assign(m_maxFramesInFlight, VK_NULL_HANDLE);
 	} catch (const std::exception& e) {
 		SDL_Log("Vulkan Initialization failed: %s", e.what());
 		return -1;
 	}
 
 	return 0;
+}
+
+bool VulkanDevice::Impl::CreateSwapchain(const dy::RHI::SwapchainDesc& desc, VkSwapchainKHR oldSwapchain)
+{
+	if (m_context.device == VK_NULL_HANDLE || m_windowHandle == nullptr || m_submissionFaulted) return false;
+
+	CollectCompletedSubmissions();
+	if (m_submissionFaulted) return false;
+	if (!m_submissions.empty() || m_frameReady || m_imageAcquired || m_presentPending) return false;
+	if (m_swapchain.GetHandle() != VK_NULL_HANDLE) return false;
+
+	const VkFormat requestedFormat = ToVkFormat(desc.format);
+	if (desc.format != dy::RHI::Format::Unknown && requestedFormat == VK_FORMAT_UNDEFINED) return false;
+	const VkPresentModeKHR requestedPresentMode = ToVkPresentMode(desc.presentMode);
+	if (requestedPresentMode == VK_PRESENT_MODE_MAX_ENUM_KHR) return false;
+
+	bool oldSwapchainRetired = false;
+	if (!m_swapchain.Initialize(
+		m_context,
+		m_windowHandle,
+		requestedFormat,
+		requestedPresentMode,
+		desc.minimumImageCount,
+		oldSwapchain,
+		oldSwapchainRetired)) {
+		if (oldSwapchainRetired) m_recreationOldSwapchain = VK_NULL_HANDLE;
+		return false;
+	}
+	if (oldSwapchainRetired) m_recreationOldSwapchain = VK_NULL_HANDLE;
+
+	if (!CreateMainRenderPass() ||
+		!CreateDepthResources() ||
+		!CreateFramebuffers() ||
+		!CreateSwapchainSyncObjects()) {
+		DestroySwapchainSyncObjects();
+		DestroySwapchainResources();
+		return false;
+	}
+
+	UpdateBackBufferMetadata();
+	m_swapchainDesc = desc;
+	m_hasSwapchainDesc = true;
+	m_currentFrameIndex = 0;
+	m_currentImageIndex = 0;
+	m_pendingPresentImageIndex = 0;
+	m_frameReady = false;
+	m_imageAcquired = false;
+	m_presentPending = false;
+	m_swapchainNeedsRecreate = false;
+	m_recreateAfterPresent = false;
+	return true;
 }
 
 dy::RHI::ITexture* VulkanDevice::Impl::CreateTexture(const dy::RHI::TextureDesc& desc) {
@@ -897,7 +1007,7 @@ void VulkanDevice::Impl::UpdateDescriptorSlot(dy::RHI::DescriptorIndex index, dy
 }
 
 void VulkanDevice::Impl::DestroyTexture(dy::RHI::ITexture* texture) {
-	if (!texture || texture == m_backBuffer) return;
+	if (!texture || IsSwapchainTexture(texture)) return;
 	const auto it = std::find(m_ownedTextures.begin(), m_ownedTextures.end(), texture);
 	if (it != m_ownedTextures.end()) {
 		vkDeviceWaitIdle(m_context.device);
@@ -935,97 +1045,271 @@ void VulkanDevice::Impl::DestroyBuffer(dy::RHI::IBuffer* buffer) {
 	m_ownedBuffers.erase(it);
 }
 
-void VulkanDevice::Impl::BeginFrame() {
-	m_frameReady = false;
-	m_frameSubmitted = false;
-	if (m_commandList != nullptr) {
-		m_commandList->Begin();
+dy::RHI::ICommandList* VulkanDevice::Impl::AcquireCommandList()
+{
+	CollectCompletedSubmissions();
+	if (m_submissionFaulted) return nullptr;
+
+	std::unique_ptr<VulkanCommandList> commandList = std::make_unique<VulkanCommandList>();
+	commandList->Begin();
+	VulkanCommandList* result = commandList.get();
+	m_acquiredCommandLists.push_back(std::move(commandList));
+	return result;
+}
+
+bool VulkanDevice::Impl::BeginFrame()
+{
+	if (m_frameReady) return false;
+	if (m_context.device == VK_NULL_HANDLE || m_presentPending || m_submissionFaulted) return false;
+
+	CollectCompletedSubmissions();
+	if (m_submissionFaulted) return false;
+	if (m_swapchainNeedsRecreate) {
+		if (!m_submissions.empty() || m_imageAcquired) return false;
+		if (!RecreateSwapchain()) return false;
+	}
+	if (m_swapchain.GetHandle() == VK_NULL_HANDLE) return false;
+
+	if (m_currentFrameIndex >= m_frameSlots.size() ||
+		m_frameSlots[m_currentFrameIndex] != VK_NULL_HANDLE) {
+		return false;
 	}
 
-	if (!m_context.device || m_swapchain.GetHandle() == VK_NULL_HANDLE) return;
+	if (!m_imageAcquired) {
+		const VkResult acquireResult = vkAcquireNextImageKHR(
+			m_context.device,
+			m_swapchain.GetHandle(),
+			0,
+			m_imageAvailableSemaphores[m_currentFrameIndex],
+			VK_NULL_HANDLE,
+			&m_currentImageIndex);
 
-	vkWaitForFences(m_context.device, 1, &m_inFlightFences[m_currentFrameIndex], VK_TRUE, UINT64_MAX);
+		if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+			m_swapchainNeedsRecreate = true;
+			return false;
+		}
+		if (acquireResult == VK_NOT_READY || acquireResult == VK_TIMEOUT) return false;
+		if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+			SDL_Log("Failed to acquire swapchain image: %s (%d)", VkResultToString(acquireResult), static_cast<int>(acquireResult));
+			if (acquireResult == VK_ERROR_DEVICE_LOST) m_submissionFaulted = true;
+			return false;
+		}
 
-	const VkResult acquireResult = vkAcquireNextImageKHR(
-		m_context.device, m_swapchain.GetHandle(), m_frameAcquireTimeoutNanoseconds,
-		m_imageAvailableSemaphores[m_currentFrameIndex],
-		VK_NULL_HANDLE, &m_currentImageIndex
-	);
-
-	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-		RecreateSwapchain();
-		return;
-	} else if (acquireResult == VK_NOT_READY || acquireResult == VK_TIMEOUT) {
-		return;
-	} else if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-		SDL_Log("Failed to acquire swapchain image: %s (%d)", VkResultToString(acquireResult), static_cast<int>(acquireResult));
-		return;
+		m_imageAcquired = true;
+		m_recreateAfterPresent = acquireResult == VK_SUBOPTIMAL_KHR;
 	}
 
 	if (m_currentImageIndex >= m_imagesInFlight.size()) {
-		SDL_Log("Swapchain image index %u is out of tracked range %zu. Recreating swapchain.", m_currentImageIndex, m_imagesInFlight.size());
-		RecreateSwapchain();
-		return;
+		m_submissionFaulted = true;
+		return false;
+	}
+	if (m_imagesInFlight[m_currentImageIndex] != VK_NULL_HANDLE) return false;
+	if (m_currentImageIndex >= m_backBuffers.size()) {
+		m_submissionFaulted = true;
+		return false;
 	}
 
-	if (m_imagesInFlight[m_currentImageIndex] != VK_NULL_HANDLE) {
-		vkWaitForFences(m_context.device, 1, &m_imagesInFlight[m_currentImageIndex], VK_TRUE, UINT64_MAX);
-	}
-	m_imagesInFlight[m_currentImageIndex] = m_inFlightFences[m_currentFrameIndex];
-
-	vkResetFences(m_context.device, 1, &m_inFlightFences[m_currentFrameIndex]);
+	m_backBuffer = m_backBuffers[m_currentImageIndex].get();
 	m_frameReady = true;
+	return true;
 }
 
-void VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count) {
-	if (!m_frameReady || count == 0 || !cmdLists || !cmdLists[0]) return;
+bool VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count)
+{
+	if (m_context.device == VK_NULL_HANDLE || cmdLists == nullptr || count == 0 || m_submissionFaulted) return false;
+	CollectCompletedSubmissions();
+	if (m_submissionFaulted) return false;
 
-	VulkanCommandList* vulkanCmd = static_cast<VulkanCommandList*>(cmdLists[0]);
-	if (!UpdateDrawDescriptorSets(*vulkanCmd)) {
-		SDL_Log("Failed to update Vulkan draw descriptor sets.");
-		return;
+	std::vector<VulkanCommandList*> vulkanCommandLists;
+	vulkanCommandLists.reserve(count);
+	std::vector<uint32_t> commandDescriptorCounts;
+	commandDescriptorCounts.reserve(count);
+	bool usesSwapchain = false;
+	uint32_t descriptorCount = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		VulkanCommandList* commandList = dynamic_cast<VulkanCommandList*>(cmdLists[i]);
+		if (commandList == nullptr || !commandList->m_isClosed) return false;
+		if (std::find(vulkanCommandLists.begin(), vulkanCommandLists.end(), commandList) != vulkanCommandLists.end()) return false;
+
+		const auto acquired = std::find_if(m_acquiredCommandLists.begin(), m_acquiredCommandLists.end(), [commandList](const std::unique_ptr<VulkanCommandList>& candidate) {
+			return candidate.get() == commandList;
+		});
+		if (acquired == m_acquiredCommandLists.end()) return false;
+
+		usesSwapchain = usesSwapchain || UsesSwapchain(*commandList);
+		uint32_t commandDescriptorCount = static_cast<uint32_t>(commandList->m_drawCalls.size());
+		if (!commandList->m_drawCalls.empty()) {
+			const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(commandList->m_drawCalls.front().pipelineState);
+			if (pipelineState != nullptr && pipelineState->UsesBindlessTextures()) commandDescriptorCount = 1;
+		}
+		if (commandDescriptorCount > m_maxDrawsPerFrame - descriptorCount) return false;
+		descriptorCount += commandDescriptorCount;
+		vulkanCommandLists.push_back(commandList);
+		commandDescriptorCounts.push_back(commandDescriptorCount);
 	}
-	RecordCommandBuffer(*vulkanCmd);
 
-	const VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	const bool frameSubmission = usesSwapchain;
+	if (frameSubmission && !m_frameReady) return false;
+	if (frameSubmission && (m_presentPending || !m_imageAcquired || m_currentImageIndex >= m_renderFinishedSemaphores.size())) return false;
+	if (frameSubmission && (m_currentFrameIndex >= m_frameSlots.size() || m_frameSlots[m_currentFrameIndex] != VK_NULL_HANDLE)) return false;
+	SubmissionRecord submission{};
+	submission.commandLists.reserve(count);
+	m_submissions.reserve(m_submissions.size() + 1);
+
+	VkDescriptorPool submissionDescriptorPool = VK_NULL_HANDLE;
+	std::vector<VkDescriptorSet> submissionDescriptorSets;
+	if (descriptorCount > 0) {
+		if (frameSubmission) {
+			const size_t firstDescriptor = static_cast<size_t>(m_currentFrameIndex) * m_maxDrawsPerFrame;
+			if (firstDescriptor + descriptorCount > m_descriptorSets.size()) return false;
+			submissionDescriptorSets.assign(
+				m_descriptorSets.begin() + static_cast<std::ptrdiff_t>(firstDescriptor),
+				m_descriptorSets.begin() + static_cast<std::ptrdiff_t>(firstDescriptor + descriptorCount));
+		} else {
+			std::vector<VkDescriptorPoolSize> poolSizes;
+			if (m_shaderLayout.samplerDescriptorCount > 0) {
+				poolSizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, descriptorCount * m_shaderLayout.samplerDescriptorCount });
+			}
+			if (m_shaderLayout.constantBufferDescriptorCount > 0) {
+				poolSizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptorCount * m_shaderLayout.constantBufferDescriptorCount });
+			}
+			if (m_shaderLayout.storageBufferDescriptorCount > 0) {
+				poolSizes.push_back({ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptorCount * m_shaderLayout.storageBufferDescriptorCount });
+			}
+
+			VkDescriptorPoolCreateInfo poolInfo{};
+			poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+			poolInfo.maxSets = descriptorCount;
+			poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+			poolInfo.pPoolSizes = poolSizes.empty() ? nullptr : poolSizes.data();
+			if (vkCreateDescriptorPool(m_context.device, &poolInfo, nullptr, &submissionDescriptorPool) != VK_SUCCESS) return false;
+
+			std::vector<VkDescriptorSetLayout> layouts(descriptorCount, m_descriptorSetLayout);
+			submissionDescriptorSets.resize(descriptorCount);
+			VkDescriptorSetAllocateInfo descriptorAllocateInfo{};
+			descriptorAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+			descriptorAllocateInfo.descriptorPool = submissionDescriptorPool;
+			descriptorAllocateInfo.descriptorSetCount = descriptorCount;
+			descriptorAllocateInfo.pSetLayouts = layouts.data();
+			if (vkAllocateDescriptorSets(m_context.device, &descriptorAllocateInfo, submissionDescriptorSets.data()) != VK_SUCCESS) {
+				vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+				return false;
+			}
+		}
+	}
+
+	uint32_t descriptorOffset = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!UpdateDrawDescriptorSets(*vulkanCommandLists[i], submissionDescriptorSets, descriptorOffset)) {
+			if (submissionDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+			return false;
+		}
+		descriptorOffset += commandDescriptorCounts[i];
+	}
+
+	std::vector<VkCommandBuffer> nativeCommandBuffers(count, VK_NULL_HANDLE);
+	VkCommandBufferAllocateInfo allocateInfo{};
+	allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocateInfo.commandPool = m_commandPool;
+	allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocateInfo.commandBufferCount = count;
+	if (vkAllocateCommandBuffers(m_context.device, &allocateInfo, nativeCommandBuffers.data()) != VK_SUCCESS) {
+		if (submissionDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+		return false;
+	}
+
+	descriptorOffset = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (!RecordCommandBuffer(nativeCommandBuffers[i], *vulkanCommandLists[i], submissionDescriptorSets, descriptorOffset)) {
+			vkFreeCommandBuffers(m_context.device, m_commandPool, count, nativeCommandBuffers.data());
+			if (submissionDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+			return false;
+		}
+		descriptorOffset += commandDescriptorCounts[i];
+	}
+
+	VkFenceCreateInfo fenceInfo{};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	VkFence fence = VK_NULL_HANDLE;
+	if (vkCreateFence(m_context.device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+		vkFreeCommandBuffers(m_context.device, m_commandPool, count, nativeCommandBuffers.data());
+		if (submissionDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+		return false;
+	}
+
+	const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = &m_imageAvailableSemaphores[m_currentFrameIndex];
-	submitInfo.pWaitDstStageMask = waitStages;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &m_commandBuffers[m_currentFrameIndex];
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[m_currentImageIndex];
-
-	if (vkQueueSubmit(m_context.graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrameIndex]) != VK_SUCCESS) {
-		SDL_Log("failed to submit draw command buffer!");
-		return;
+	submitInfo.commandBufferCount = count;
+	submitInfo.pCommandBuffers = nativeCommandBuffers.data();
+	if (frameSubmission) {
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pWaitSemaphores = &m_imageAvailableSemaphores[m_currentFrameIndex];
+		submitInfo.pWaitDstStageMask = &waitStage;
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[m_currentImageIndex];
 	}
 
-	m_frameSubmitted = true;
+	const VkResult submitResult = vkQueueSubmit(m_context.graphicsQueue, 1, &submitInfo, fence);
+	if (submitResult != VK_SUCCESS) {
+		if (submitResult == VK_ERROR_DEVICE_LOST) m_submissionFaulted = true;
+		vkDestroyFence(m_context.device, fence, nullptr);
+		vkFreeCommandBuffers(m_context.device, m_commandPool, count, nativeCommandBuffers.data());
+		if (submissionDescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submissionDescriptorPool, nullptr);
+		return false;
+	}
+
+	submission.fence = fence;
+	submission.descriptorPool = submissionDescriptorPool;
+	submission.commandBuffers = std::move(nativeCommandBuffers);
+	if (frameSubmission) {
+		submission.frameSlot = m_currentFrameIndex;
+		submission.imageIndex = m_currentImageIndex;
+	}
+	for (VulkanCommandList* commandList : vulkanCommandLists) {
+		const auto acquired = std::find_if(m_acquiredCommandLists.begin(), m_acquiredCommandLists.end(), [commandList](const std::unique_ptr<VulkanCommandList>& candidate) {
+			return candidate.get() == commandList;
+		});
+		submission.commandLists.push_back(std::move(*acquired));
+		m_acquiredCommandLists.erase(acquired);
+	}
+
+	if (frameSubmission) {
+		m_frameSlots[m_currentFrameIndex] = fence;
+		m_imagesInFlight[m_currentImageIndex] = fence;
+		m_pendingPresentImageIndex = m_currentImageIndex;
+		m_presentPending = true;
+		m_frameReady = false;
+		m_imageAcquired = false;
+		m_currentFrameIndex = (m_currentFrameIndex + 1) % m_maxFramesInFlight;
+	}
+	m_submissions.push_back(std::move(submission));
+	return true;
 }
 
-void VulkanDevice::Impl::Present() {
-	if (!m_frameSubmitted) return;
+void VulkanDevice::Impl::Present()
+{
+	if (!m_presentPending || m_swapchain.GetHandle() == VK_NULL_HANDLE || m_submissionFaulted) return;
 
 	VkSwapchainKHR swapchainHandle = m_swapchain.GetHandle();
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[m_currentImageIndex];
+	presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[m_pendingPresentImageIndex];
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = &swapchainHandle;
-	presentInfo.pImageIndices = &m_currentImageIndex;
+	presentInfo.pImageIndices = &m_pendingPresentImageIndex;
 
 	const VkResult presentResult = vkQueuePresentKHR(m_context.presentQueue, &presentInfo);
-	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
-		RecreateSwapchain();
+	m_presentPending = false;
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || m_recreateAfterPresent) {
+		m_swapchainNeedsRecreate = true;
+		m_recreateAfterPresent = false;
 	} else if (presentResult != VK_SUCCESS) {
 		SDL_Log("Failed to present swapchain image: %s (%d)", VkResultToString(presentResult), static_cast<int>(presentResult));
+		if (presentResult == VK_ERROR_DEVICE_LOST) m_submissionFaulted = true;
+		else m_swapchainNeedsRecreate = true;
 	}
-
-	m_currentFrameIndex = (m_currentFrameIndex + 1) % m_maxFramesInFlight;
 }
 
 bool VulkanDevice::Impl::CreateInstance() {
@@ -1138,25 +1422,34 @@ bool VulkanDevice::Impl::CreateLogicalDevice() {
 	return true;
 }
 
-void VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandList) {
-	VkCommandBuffer commandBuffer = m_commandBuffers[m_currentFrameIndex];
-	vkResetCommandBuffer(commandBuffer, 0);
+bool VulkanDevice::Impl::RecordCommandBuffer(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	uint32_t descriptorOffset)
+{
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) return false;
 
 	// Pass 1: Shadow Pass 
 	if (m_shadowRenderPass != VK_NULL_HANDLE && m_shadowPipeline != VK_NULL_HANDLE) {
-		RecordShadowPass(commandBuffer, commandList);
+		RecordShadowPass(commandBuffer, commandList, descriptorSets, descriptorOffset);
 	}
 
 	// Pass 2: Main Pass
-	RecordMainPass(commandBuffer, commandList);
+	if (!RecordMainPass(commandBuffer, commandList, descriptorSets, descriptorOffset)) return false;
 
-	vkEndCommandBuffer(commandBuffer);
+	return vkEndCommandBuffer(commandBuffer) == VK_SUCCESS;
 }
 
-void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList) {
+void VulkanDevice::Impl::RecordShadowPass(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	uint32_t descriptorOffset)
+{
 	VkClearValue newShadowClear = {};
 	newShadowClear.depthStencil = { 1.0f, 0 };
 
@@ -1205,10 +1498,9 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 		}
 		if (!shouldCastShadow) continue;
 
-		const uint32_t descriptorSlot = usesBindlessTextures ? 0u : drawIndex;
-		const uint32_t descriptorIndex = m_currentFrameIndex * m_maxDrawsPerFrame + descriptorSlot;
-		if (descriptorIndex < m_descriptorSets.size()) {
-			VkDescriptorSet descriptorSet = m_descriptorSets[descriptorIndex];
+		const uint32_t descriptorSlot = descriptorOffset + (usesBindlessTextures ? 0u : drawIndex);
+		if (descriptorSlot < descriptorSets.size()) {
+			VkDescriptorSet descriptorSet = descriptorSets[descriptorSlot];
 			if (descriptorSet != currentDescriptorSet) {
 				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 				currentDescriptorSet = descriptorSet;
@@ -1252,11 +1544,16 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 	vkCmdEndRenderPass(commandBuffer);
 	return;
 }
-void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList) {
+bool VulkanDevice::Impl::RecordMainPass(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	uint32_t descriptorOffset)
+{
 	VkRenderPass renderPass = VK_NULL_HANDLE;
 	VkFramebuffer framebuffer = VK_NULL_HANDLE;
 	VkExtent2D renderExtent = {};
-	if (!ResolveMainPassTarget(commandList, renderPass, framebuffer, renderExtent)) return;
+	if (!ResolveMainPassTarget(commandList, renderPass, framebuffer, renderExtent)) return false;
 
 	std::array<VkClearValue, 2> clearValues = {};
 	clearValues[0].color = { {
@@ -1302,10 +1599,9 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 			currentBindlessDescriptorSet = VK_NULL_HANDLE;
 		}
 
-		const uint32_t descriptorSlot = usesBindlessTextures ? 0u : drawIndex;
-		const uint32_t descriptorIndex = m_currentFrameIndex * m_maxDrawsPerFrame + descriptorSlot;
-		if (descriptorIndex < m_descriptorSets.size()) {
-			VkDescriptorSet descriptorSet = m_descriptorSets[descriptorIndex];
+		const uint32_t descriptorSlot = descriptorOffset + (usesBindlessTextures ? 0u : drawIndex);
+		if (descriptorSlot < descriptorSets.size()) {
+			VkDescriptorSet descriptorSet = descriptorSets[descriptorSlot];
 			if (descriptorSet != currentDescriptorSet || pipeline->GetLayout() != currentPipelineLayout) {
 				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
 				currentDescriptorSet = descriptorSet;
@@ -1384,6 +1680,7 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	}
 
 	vkCmdEndRenderPass(commandBuffer);
+	return true;
 }
 
 bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandList, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent) {
@@ -1392,15 +1689,13 @@ bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandL
 		return false;
 	}
 
-	dy::RHI::ITexture* colorTarget = m_backBuffer;
-	if (commandList.m_renderTargetCount == 1 && commandList.m_renderTargets[0] != nullptr) {
-		colorTarget = commandList.m_renderTargets[0];
-	}
+	if (commandList.m_renderTargetCount != 1 || commandList.m_renderTargets[0] == nullptr) return false;
+	dy::RHI::ITexture* colorTarget = commandList.m_renderTargets[0];
 
-	if (colorTarget == nullptr || colorTarget == m_backBuffer) {
+	if (colorTarget == m_backBuffer) {
 		if (commandList.m_depthStencil != nullptr && commandList.m_depthStencil != m_depthTexture) {
 			for (const RenderTargetCacheEntry& entry : m_renderTargetCache) {
-				if (entry.colorTarget == m_backBuffer &&
+				if (entry.colorTarget == colorTarget &&
 					entry.depthTarget == commandList.m_depthStencil &&
 					entry.imageIndex == m_currentImageIndex) {
 					renderPass = entry.renderPass;
@@ -1437,7 +1732,7 @@ bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandL
 			if (vkCreateFramebuffer(m_context.device, &fbInfo, nullptr, &swapchainFramebuffer) != VK_SUCCESS) return false;
 
 			RenderTargetCacheEntry entry{};
-			entry.colorTarget = m_backBuffer;
+			entry.colorTarget = colorTarget;
 			entry.depthTarget = commandList.m_depthStencil;
 			entry.renderPass = m_mainRenderPass;
 			entry.framebuffer = swapchainFramebuffer;
@@ -1693,33 +1988,24 @@ bool VulkanDevice::Impl::CreateCommandPool() {
 	return vkCreateCommandPool(m_context.device, &poolInfo, nullptr, &m_commandPool) == VK_SUCCESS;
 }
 
-bool VulkanDevice::Impl::CreateCommandBuffer() {
-	VkCommandBufferAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = m_commandPool;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = m_maxFramesInFlight;
-	m_commandBuffers.resize(m_maxFramesInFlight);
-	return vkAllocateCommandBuffers(m_context.device, &allocInfo, m_commandBuffers.data()) == VK_SUCCESS;
-}
-
-bool VulkanDevice::Impl::CreateSyncObjects() {
+bool VulkanDevice::Impl::CreateSwapchainSyncObjects() {
 	VkSemaphoreCreateInfo semInfo{};
 	semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-	VkFenceCreateInfo fenceInfo{};
-	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-	
-	m_imageAvailableSemaphores.resize(m_maxFramesInFlight);
-	m_inFlightFences.resize(m_maxFramesInFlight);
-	m_renderFinishedSemaphores.resize(m_swapchain.GetImageCount()); 
+
+	m_imageAvailableSemaphores.assign(m_maxFramesInFlight, VK_NULL_HANDLE);
+	m_renderFinishedSemaphores.assign(m_swapchain.GetImageCount(), VK_NULL_HANDLE);
 
 	for (uint32_t i = 0; i < m_maxFramesInFlight; ++i) {
-		if (vkCreateSemaphore(m_context.device, &semInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS || 
-			vkCreateFence(m_context.device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS) return false;
+		if (vkCreateSemaphore(m_context.device, &semInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS) {
+			DestroySwapchainSyncObjects();
+			return false;
+		}
 	}
 	for (size_t i = 0; i < m_swapchain.GetImageCount(); ++i) {
-		if (vkCreateSemaphore(m_context.device, &semInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS) return false;
+		if (vkCreateSemaphore(m_context.device, &semInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS) {
+			DestroySwapchainSyncObjects();
+			return false;
+		}
 	}
 	m_imagesInFlight.assign(m_swapchain.GetImageCount(), VK_NULL_HANDLE);
 	return true;
@@ -1909,24 +2195,33 @@ bool VulkanDevice::Impl::InitializeBindlessDescriptorSet() {
 	return true;
 }
 
-bool VulkanDevice::Impl::UpdateDrawDescriptorSets(const VulkanCommandList& commandList) {
+bool VulkanDevice::Impl::UpdateDrawDescriptorSets(
+	const VulkanCommandList& commandList,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	uint32_t descriptorOffset)
+{
 	if (commandList.m_drawCalls.size() > m_maxDrawsPerFrame) return false;
 	if (!commandList.m_drawCalls.empty()) {
 		const VulkanCommandList::DrawCall& firstDraw = commandList.m_drawCalls.front();
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(firstDraw.pipelineState);
 		if (pipelineState != nullptr && pipelineState->UsesBindlessTextures()) {
-			return UpdateDrawDescriptorSet(firstDraw, 0);
+			if (descriptorOffset >= descriptorSets.size()) return false;
+			return UpdateDrawDescriptorSet(firstDraw, descriptorSets[descriptorOffset]);
 		}
 	}
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
-		if (!UpdateDrawDescriptorSet(commandList.m_drawCalls[drawIndex], drawIndex)) return false;
+		const uint32_t descriptorSlot = descriptorOffset + drawIndex;
+		if (descriptorSlot >= descriptorSets.size() ||
+			!UpdateDrawDescriptorSet(commandList.m_drawCalls[drawIndex], descriptorSets[descriptorSlot])) return false;
 	}
 	return true;
 }
 
-bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCall& drawCall, uint32_t drawIndex) {
-	const uint32_t descriptorIndex = m_currentFrameIndex * m_maxDrawsPerFrame + drawIndex;
-	if (descriptorIndex >= m_descriptorSets.size()) return false;
+bool VulkanDevice::Impl::UpdateDrawDescriptorSet(
+	const VulkanCommandList::DrawCall& drawCall,
+	VkDescriptorSet descriptorSet)
+{
+	if (descriptorSet == VK_NULL_HANDLE) return false;
 
 	const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 	const bool usesBindlessTextures = pipelineState != nullptr && pipelineState->UsesBindlessTextures();
@@ -1969,7 +2264,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 
 			VkWriteDescriptorSet textureWrite{};
 			textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			textureWrite.dstSet = m_descriptorSets[descriptorIndex];
+			textureWrite.dstSet = descriptorSet;
 			textureWrite.dstBinding = binding;
 			textureWrite.descriptorCount = 1;
 			textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1990,7 +2285,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 
 		VkWriteDescriptorSet constantWrite{};
 		constantWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		constantWrite.dstSet = m_descriptorSets[descriptorIndex];
+		constantWrite.dstSet = descriptorSet;
 		constantWrite.dstBinding = binding;
 		constantWrite.descriptorCount = 1;
 		constantWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -2010,7 +2305,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 
 		VkWriteDescriptorSet storageWrite{};
 		storageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		storageWrite.dstSet = m_descriptorSets[descriptorIndex];
+		storageWrite.dstSet = descriptorSet;
 		storageWrite.dstBinding = binding;
 		storageWrite.descriptorCount = 1;
 		storageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2032,7 +2327,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 			: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		VkWriteDescriptorSet shadowWrite{};
 		shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		shadowWrite.dstSet = m_descriptorSets[descriptorIndex];
+		shadowWrite.dstSet = descriptorSet;
 		shadowWrite.dstBinding = m_shaderLayout.shadowSamplerBinding;
 		shadowWrite.descriptorCount = 1;
 		shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2050,7 +2345,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 
 	VkWriteDescriptorSet vertexWrite{};
 	vertexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	vertexWrite.dstSet = m_descriptorSets[descriptorIndex];
+	vertexWrite.dstSet = descriptorSet;
 	vertexWrite.dstBinding = m_shaderLayout.vertexStorageBinding;
 	vertexWrite.descriptorCount = 1;
 	vertexWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2059,7 +2354,7 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSet(const VulkanCommandList::DrawCa
 
 	VkWriteDescriptorSet indexWrite{};
 	indexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	indexWrite.dstSet = m_descriptorSets[descriptorIndex];
+	indexWrite.dstSet = descriptorSet;
 	indexWrite.dstBinding = m_shaderLayout.indexStorageBinding;
 	indexWrite.descriptorCount = 1;
 	indexWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2309,16 +2604,147 @@ void VulkanDevice::Impl::DestroyRenderTargetCache() {
 	m_renderTargetCache.clear();
 }
 
-void VulkanDevice::Impl::RecreateSwapchain() {
-	vkDeviceWaitIdle(m_context.device);
-	DestroySwapchainResources();
-	m_swapchain.Initialize(m_context, m_windowHandle, dy::RHI::IsSrgbFormat(GetDesc().swapchainFormat));
-	UpdateBackBufferMetadata();
-	m_depthFormat = FindDepthFormat();
-	CreateMainRenderPass();
-	CreateDepthResources();
-	CreateFramebuffers();
-	m_imagesInFlight.assign(m_swapchain.GetImageCount(), VK_NULL_HANDLE);
+void VulkanDevice::Impl::CollectCompletedSubmissions()
+{
+	if (m_context.device == VK_NULL_HANDLE) return;
+
+	for (size_t i = 0; i < m_submissions.size();) {
+		SubmissionRecord& submission = m_submissions[i];
+		const VkResult status = vkGetFenceStatus(m_context.device, submission.fence);
+		if (status == VK_NOT_READY) {
+			++i;
+			continue;
+		}
+		if (status != VK_SUCCESS) {
+			SDL_Log("Failed to query Vulkan submission fence: %s (%d)", VkResultToString(status), static_cast<int>(status));
+			m_submissionFaulted = true;
+			++i;
+			continue;
+		}
+
+		if (submission.frameSlot < m_frameSlots.size() &&
+			m_frameSlots[submission.frameSlot] == submission.fence) {
+			m_frameSlots[submission.frameSlot] = VK_NULL_HANDLE;
+		}
+		if (submission.imageIndex < m_imagesInFlight.size() &&
+			m_imagesInFlight[submission.imageIndex] == submission.fence) {
+			m_imagesInFlight[submission.imageIndex] = VK_NULL_HANDLE;
+		}
+
+		if (!submission.commandBuffers.empty()) {
+			vkFreeCommandBuffers(
+				m_context.device,
+				m_commandPool,
+				static_cast<uint32_t>(submission.commandBuffers.size()),
+				submission.commandBuffers.data());
+		}
+		if (submission.descriptorPool != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(m_context.device, submission.descriptorPool, nullptr);
+		}
+		vkDestroyFence(m_context.device, submission.fence, nullptr);
+		m_submissions.erase(m_submissions.begin() + static_cast<std::ptrdiff_t>(i));
+	}
+}
+
+bool VulkanDevice::Impl::UsesSwapchain(const VulkanCommandList& commandList) const
+{
+	return commandList.m_renderTargetCount == 1 && commandList.m_renderTargets[0] == m_backBuffer;
+}
+
+bool VulkanDevice::Impl::IsSwapchainTexture(const dy::RHI::ITexture* texture) const
+{
+	return std::any_of(m_backBuffers.begin(), m_backBuffers.end(), [texture](const std::unique_ptr<VulkanTexture>& backBuffer) {
+		return backBuffer.get() == texture;
+	});
+}
+
+bool VulkanDevice::Impl::RecreateSwapchain()
+{
+	if (!m_hasSwapchainDesc || m_context.device == VK_NULL_HANDLE || m_submissionFaulted) return false;
+	CollectCompletedSubmissions();
+	if (m_submissionFaulted) return false;
+	if (!m_submissions.empty() || m_frameReady || m_imageAcquired || m_presentPending) return false;
+
+	const dy::RHI::SwapchainDesc desc = m_swapchainDesc;
+	if (m_swapchain.GetHandle() != VK_NULL_HANDLE) {
+		m_recreationOldSwapchain = RetireSwapchainGeneration();
+	}
+	return CreateSwapchain(desc, m_recreationOldSwapchain);
+}
+
+VkSwapchainKHR VulkanDevice::Impl::RetireSwapchainGeneration()
+{
+	RetiredSwapchainGeneration generation{};
+	const VkSwapchainKHR oldSwapchain = m_swapchain.GetHandle();
+	generation.swapchain = std::move(m_swapchain);
+	generation.mainRenderPass = m_mainRenderPass;
+	m_mainRenderPass = VK_NULL_HANDLE;
+	generation.depthTexture.reset(static_cast<VulkanTexture*>(m_depthTexture));
+	m_depthTexture = nullptr;
+	generation.framebuffers = std::move(m_swapchainFramebuffers);
+	generation.imageAvailableSemaphores = std::move(m_imageAvailableSemaphores);
+	generation.renderFinishedSemaphores = std::move(m_renderFinishedSemaphores);
+
+	std::vector<RenderTargetCacheEntry> retainedCache;
+	retainedCache.reserve(m_renderTargetCache.size());
+	for (RenderTargetCacheEntry& entry : m_renderTargetCache) {
+		if (IsSwapchainTexture(entry.colorTarget)) {
+			generation.renderTargetCache.push_back(std::move(entry));
+		} else {
+			retainedCache.push_back(std::move(entry));
+		}
+	}
+	m_renderTargetCache = std::move(retainedCache);
+
+	generation.backBuffers = std::move(m_backBuffers);
+	m_backBuffer = nullptr;
+	m_imagesInFlight.clear();
+	m_currentImageIndex = 0;
+	m_pendingPresentImageIndex = 0;
+	m_recreateAfterPresent = false;
+	m_retiredSwapchainGenerations.push_back(std::move(generation));
+	return oldSwapchain;
+}
+
+void VulkanDevice::Impl::DestroyRetiredSwapchainGenerations()
+{
+	if (m_context.device == VK_NULL_HANDLE) return;
+	for (RetiredSwapchainGeneration& generation : m_retiredSwapchainGenerations) {
+		for (RenderTargetCacheEntry& entry : generation.renderTargetCache) {
+			if (entry.framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(m_context.device, entry.framebuffer, nullptr);
+			if (entry.ownsRenderPass && entry.renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(m_context.device, entry.renderPass, nullptr);
+			delete entry.ownedDepthTarget;
+		}
+		for (VkFramebuffer framebuffer : generation.framebuffers) {
+			if (framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(m_context.device, framebuffer, nullptr);
+		}
+		generation.depthTexture.reset();
+		if (generation.mainRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(m_context.device, generation.mainRenderPass, nullptr);
+		for (VkSemaphore semaphore : generation.imageAvailableSemaphores) {
+			if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(m_context.device, semaphore, nullptr);
+		}
+		for (VkSemaphore semaphore : generation.renderFinishedSemaphores) {
+			if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(m_context.device, semaphore, nullptr);
+		}
+		generation.swapchain.Cleanup(m_context.device);
+		generation.backBuffers.clear();
+	}
+	m_retiredSwapchainGenerations.clear();
+}
+
+void VulkanDevice::Impl::DestroySwapchainSyncObjects()
+{
+	if (m_context.device != VK_NULL_HANDLE) {
+		for (VkSemaphore semaphore : m_imageAvailableSemaphores) {
+			if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(m_context.device, semaphore, nullptr);
+		}
+		for (VkSemaphore semaphore : m_renderFinishedSemaphores) {
+			if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(m_context.device, semaphore, nullptr);
+		}
+	}
+	m_imageAvailableSemaphores.clear();
+	m_renderFinishedSemaphores.clear();
+	m_imagesInFlight.clear();
 }
 
 void VulkanDevice::Impl::DestroySwapchainResources() {
@@ -2328,45 +2754,62 @@ void VulkanDevice::Impl::DestroySwapchainResources() {
 	delete m_depthTexture;
 	m_depthTexture = nullptr;
 	if (m_mainRenderPass != VK_NULL_HANDLE) {
+		for (dy::RHI::IPipelineState* pipelineState : m_ownedPipelineStates) {
+			if (auto* vulkanPipelineState = dynamic_cast<VulkanPipelineState*>(pipelineState)) {
+				vulkanPipelineState->RemoveRenderPass(m_mainRenderPass);
+			}
+		}
 		vkDestroyRenderPass(m_context.device, m_mainRenderPass, nullptr);
 		m_mainRenderPass = VK_NULL_HANDLE;
 	}
 	m_swapchain.Cleanup(m_context.device);
+	m_backBuffer = nullptr;
+	m_backBuffers.clear();
 }
 
 void VulkanDevice::Impl::DestroyDeviceResources() {
 	if (m_context.device != VK_NULL_HANDLE) {
 		vkDeviceWaitIdle(m_context.device);
+		CollectCompletedSubmissions();
+		for (SubmissionRecord& submission : m_submissions) {
+			if (!submission.commandBuffers.empty()) {
+				vkFreeCommandBuffers(
+					m_context.device,
+					m_commandPool,
+					static_cast<uint32_t>(submission.commandBuffers.size()),
+					submission.commandBuffers.data());
+			}
+			if (submission.descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, submission.descriptorPool, nullptr);
+			if (submission.fence != VK_NULL_HANDLE) vkDestroyFence(m_context.device, submission.fence, nullptr);
+		}
+		m_submissions.clear();
+		std::fill(m_frameSlots.begin(), m_frameSlots.end(), VK_NULL_HANDLE);
+		std::fill(m_imagesInFlight.begin(), m_imagesInFlight.end(), VK_NULL_HANDLE);
 		DestroyRenderTargetCache();
 	}
 	for (dy::RHI::IPipelineState* pipelineState : m_ownedPipelineStates) delete pipelineState;
 	m_ownedPipelineStates.clear();
+	if (m_context.device != VK_NULL_HANDLE) DestroyRetiredSwapchainGenerations();
 
 	for (dy::RHI::ITexture* texture : m_ownedTextures) delete texture;
 	m_ownedTextures.clear();
 
-	delete m_backBuffer;
 	m_backBuffer = nullptr;
+	m_backBuffers.clear();
 
 	delete m_fallbackTexture;
 	m_fallbackTexture = nullptr;
 
-	delete m_commandList;
-	m_commandList = nullptr;
-
 	if (m_context.device != VK_NULL_HANDLE) {
-		vkDeviceWaitIdle(m_context.device);
 		for (dy::RHI::IBuffer* buffer : m_ownedBuffers) delete buffer;
 		m_ownedBuffers.clear();
 		DestroyShadowResources();
 		if (m_descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, m_descriptorPool, nullptr);
 		if (m_descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(m_context.device, m_descriptorSetLayout, nullptr);
 		if (m_bindlessDescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(m_context.device, m_bindlessDescriptorSetLayout, nullptr);
-		for (auto s : m_imageAvailableSemaphores) vkDestroySemaphore(m_context.device, s, nullptr);
-		for (auto s : m_renderFinishedSemaphores) vkDestroySemaphore(m_context.device, s, nullptr);
-		for (auto f : m_inFlightFences) vkDestroyFence(m_context.device, f, nullptr);
-		if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_context.device, m_commandPool, nullptr);
+		DestroySwapchainSyncObjects();
 		DestroySwapchainResources();
+		if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_context.device, m_commandPool, nullptr);
 		vkDestroyDevice(m_context.device, nullptr);
 	}
 	if (m_context.surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(m_context.instance, m_context.surface, nullptr);
@@ -2380,16 +2823,15 @@ void VulkanDevice::Impl::UpdateBackBufferMetadata() {
 	desc.height = extent.height;
 	desc.depthOrArraySize = 1;
 	desc.mipLevels = 1;
-	// 실제 스왑체인 포맷을 정직하게 보고한다(요청한 DeviceDesc 포맷과 동일하게 선택됨).
-	desc.format = GetDesc().swapchainFormat;
+	desc.format = ToRhiColorFormat(m_swapchain.GetImageFormat());
 	desc.usage = dy::RHI::TextureUsage::RenderTarget;
 
-	if (m_backBuffer == nullptr) {
-		m_backBuffer = new VulkanTexture(desc);
-		return;
+	m_backBuffers.clear();
+	m_backBuffers.reserve(m_swapchain.GetImageCount());
+	for (size_t i = 0; i < m_swapchain.GetImageCount(); ++i) {
+		m_backBuffers.push_back(std::make_unique<VulkanTexture>(desc));
 	}
-
-	static_cast<VulkanTexture*>(m_backBuffer)->UpdateMetadata(desc.width, desc.height, desc.format);
+	m_backBuffer = m_backBuffers.empty() ? nullptr : m_backBuffers.front().get();
 }
 
 VkFormat VulkanDevice::Impl::FindDepthFormat() const {

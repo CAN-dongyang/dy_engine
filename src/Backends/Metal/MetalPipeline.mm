@@ -13,10 +13,14 @@ namespace dy::Backends
     {
         switch(format)
         {
-            case RHI::Format::R8G8B8A8_UNORM:     return MTLPixelFormatRGBA8Unorm;
-            case RHI::Format::D32_FLOAT:           return MTLPixelFormatDepth32Float;
-            case RHI::Format::D24_UNORM_S8_UINT:   return MTLPixelFormatDepth24Unorm_Stencil8;
-            default:                               return MTLPixelFormatInvalid;
+            case RHI::Format::R8G8B8A8_UNORM:      return MTLPixelFormatRGBA8Unorm;
+            case RHI::Format::B8G8R8A8_UNORM:      return MTLPixelFormatBGRA8Unorm;
+            case RHI::Format::R8G8B8A8_UNORM_SRGB: return MTLPixelFormatRGBA8Unorm_sRGB;
+            case RHI::Format::B8G8R8A8_UNORM_SRGB: return MTLPixelFormatBGRA8Unorm_sRGB;
+            case RHI::Format::R16G16B16A16_FLOAT:  return MTLPixelFormatRGBA16Float;
+            case RHI::Format::D32_FLOAT:            return MTLPixelFormatDepth32Float;
+            case RHI::Format::D24_UNORM_S8_UINT:    return MTLPixelFormatDepth24Unorm_Stencil8;
+            default:                                return MTLPixelFormatInvalid;
         }
     }
 
@@ -55,11 +59,9 @@ namespace dy::Backends
         pipeDesc.vertexFunction   = vertFunc;
         pipeDesc.fragmentFunction = fragFunc;
 
-        // renderTargetFormat이 Unknown이면 기본값 BGRA8Unorm 사용
-        if(desc.renderTargetFormat == RHI::Format::Unknown)
-            pipeDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        else
-            pipeDesc.colorAttachments[0].pixelFormat = ToMTLFormat(desc.renderTargetFormat);
+        pipeDesc.colorAttachments[0].pixelFormat = ToMTLFormat(desc.renderTargetFormat);
+        if(pipeDesc.colorAttachments[0].pixelFormat == MTLPixelFormatInvalid)
+            return;
 
         if(desc.depthEnable && desc.depthStencilFormat != RHI::Format::Unknown)
             pipeDesc.depthAttachmentPixelFormat = ToMTLFormat(desc.depthStencilFormat);

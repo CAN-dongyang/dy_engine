@@ -16,16 +16,26 @@ namespace dy::RHI
 	struct TextureDesc;
 	struct GraphicsPipelineDesc;
 
+	enum class PresentMode : uint32_t
+	{
+		Immediate,
+		Mailbox,
+		Fifo
+	};
+
+	struct SwapchainDesc
+	{
+		Format format = Format::Unknown;
+		uint32_t minimumImageCount = 2;
+		PresentMode presentMode = PresentMode::Fifo;
+	};
+
 	struct DeviceDesc
 	{
-		// 스왑체인(백버퍼) 포맷. 백엔드는 이 값을 그대로 따르고 GetBackBuffer()->GetFormat() 로 보고한다.
-		// UNORM = 셰이더 수동 감마, *_SRGB = 하드웨어 감마. 두 백엔드가 같은 값을 쓰므로 색이 일치한다.
-		Format swapchainFormat = Format::R8G8B8A8_UNORM;
 		uint32_t maxFramesInFlight = 2;
 		uint32_t maxDrawsPerFrame = 128;
 		uint32_t maxBindlessTextures = 128;
 		uint32_t defaultShadowMapResolution = 2048;
-		uint64_t frameAcquireTimeoutNanoseconds = 16666667ull;
 		ShaderLayoutDesc shaderLayout = {};
 	};
 
@@ -35,13 +45,12 @@ namespace dy::RHI
 		virtual ~IDevice() = default;
 		[[nodiscard]] static IDevice* Create(const void* windowHandle, const DeviceDesc& desc = {});
 		[[nodiscard]] const DeviceDesc& GetDesc() const { return m_desc; }
+		[[nodiscard]] virtual bool CreateSwapchain(const SwapchainDesc& desc) = 0;
 
-		virtual void BeginFrame() = 0;
-
-		[[nodiscard]] virtual uint32_t GetCurrentFrameIndex() const = 0;
+		[[nodiscard]] virtual bool BeginFrame() = 0;
 		[[nodiscard]] virtual RHI::ICommandList* AcquireCommandList()	= 0;
 
-		virtual void Submit(ICommandList** cmdLists, uint32_t count) = 0;
+		[[nodiscard]] virtual bool Submit(ICommandList** cmdLists, uint32_t count) = 0;
 		virtual void Present() = 0;
 
 		[[nodiscard]] virtual ITexture* GetBackBuffer() = 0;

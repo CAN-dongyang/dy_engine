@@ -13,10 +13,10 @@ public:
 	VulkanDevice();
 	~VulkanDevice() override;
 
-	void BeginFrame() override;
-	uint32_t GetCurrentFrameIndex() const override;
+	[[nodiscard]] bool CreateSwapchain(const dy::RHI::SwapchainDesc& desc) override;
+	[[nodiscard]] bool BeginFrame() override;
 	dy::RHI::ICommandList* AcquireCommandList() override;
-	void Submit(dy::RHI::ICommandList** cmdLists, uint32_t count) override;
+	[[nodiscard]] bool Submit(dy::RHI::ICommandList** cmdLists, uint32_t count) override;
 	void Present() override;
 
 	dy::RHI::IBuffer* CreateBuffer(const dy::RHI::BufferDesc& desc) override;

@@ -71,9 +71,11 @@ int main()
 		while(window.IsRunning())
 		{
 			window.PollEvents();
-			device->BeginFrame();
-			renderer.Render(scene, device.get());
-			device->Present();
+			if(device->BeginFrame())
+			{
+				renderer.Render(scene, device.get());
+				device->Present();
+			}
 		}
 
 		renderer.Shutdown(device.get());

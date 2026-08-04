@@ -13,6 +13,7 @@ namespace dy::Backends
     struct MetalTexture::Impl
     {
         id<MTLTexture> texture = nil;
+        bool swapchainImage = false;
     };
 
     // RHI Format → MTLPixelFormat 변환
@@ -29,10 +30,17 @@ namespace dy::Backends
         }
     }
 
-    MetalTexture::MetalTexture(const RHI::TextureDesc& desc, void* device)
+    MetalTexture::MetalTexture(const RHI::TextureDesc& desc)
         : RHI::ITexture(desc)
         , m_impl(new Impl())
     {
+        m_impl->swapchainImage = true;
+    }
+
+    MetalTexture::MetalTexture(const RHI::TextureDesc& desc, void* device)
+        : MetalTexture(desc)
+    {
+        m_impl->swapchainImage = false;
         id<MTLDevice> mtlDevice = (__bridge id<MTLDevice>)device;
 
         MTLTextureDescriptor* texDesc = [MTLTextureDescriptor new];
@@ -55,11 +63,19 @@ namespace dy::Backends
         texDesc.usage = mtlUsage;
 
         m_impl->texture = [mtlDevice newTextureWithDescriptor:texDesc];
+#if !__has_feature(objc_arc)
+        [texDesc release];
+#endif
         // 텍스처 초기 데이터는 IDevice::UpdateTexture 단일 경로로 업로드한다(생성-시 초기화 경로 폐기).
     }
 
     MetalTexture::~MetalTexture()
     {
+#if !__has_feature(objc_arc)
+        if(!m_impl->swapchainImage)
+            [m_impl->texture release];
+#endif
+        m_impl->texture = nil;
         delete m_impl;
     }
 
@@ -67,9 +83,21 @@ namespace dy::Backends
     {
         return (__bridge void*)m_impl->texture;
     }
-void MetalTexture::SetNativeTexture(void* texture)
+
+    bool MetalTexture::IsSwapchainImage() const
     {
+        return m_impl->swapchainImage;
+    }
+
+    void MetalTexture::SetBackBuffer(void* texture, const RHI::TextureDesc& desc)
+    {
+#if !__has_feature(objc_arc)
+        if(!m_impl->swapchainImage)
+            [m_impl->texture release];
+#endif
+        m_impl->swapchainImage = true;
         m_impl->texture = (__bridge id<MTLTexture>)texture;
+        SetDesc(desc);
     }
 }
 

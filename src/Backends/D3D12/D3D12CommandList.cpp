@@ -5,6 +5,7 @@
 #include "D3D12Texture.h"
 
 #include <d3d12.h>
+#include <algorithm>
 #include <wrl.h>
 
 using Microsoft::WRL::ComPtr;
@@ -47,6 +48,17 @@ namespace dy::Backends
             texture->SetResourceState(after);
         }
 
+        void TrackSwapchainImage(
+            std::vector<D3D12Texture*>& images,
+            D3D12Texture* texture)
+        {
+            if (texture == nullptr || !texture->IsSwapchainImage()) return;
+            if (std::find(images.begin(), images.end(), texture) == images.end())
+            {
+                images.push_back(texture);
+            }
+        }
+
         void BindTextureDescriptorTable(
             ID3D12GraphicsCommandList* commandList,
             ID3D12DescriptorHeap* descriptorHeap,
@@ -72,30 +84,42 @@ namespace dy::Backends
     {
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commandList;
-        ComPtr<ID3D12Resource> backBuffer;
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
-        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
-        bool hasDSV = false;
         ID3D12Device* device = nullptr;
         ID3D12DescriptorHeap* globalDescriptorHeap = nullptr;
         uint32_t srvDescriptorSize = 0;
-        D3D12Texture* backBufferTexture = nullptr; // 상태 추적기(GetBackBuffer 가 돌려주는 래퍼와 동일 리소스)
+        std::vector<D3D12Texture*> referencedSwapchainImages;
+        bool closed = false;
     };
 
-    D3D12CommandList::D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr, void* globalDescriptorHeap, uint32_t srvDescriptorSize)
+    D3D12CommandList::D3D12CommandList(
+        void* nativeDevice,
+        void* globalDescriptorHeap,
+        uint32_t srvDescriptorSize)
     {
         m_internal = new D3D12CommandListInternal();
         ID3D12Device* device = static_cast<ID3D12Device*>(nativeDevice);
 
-        m_internal->backBuffer = static_cast<ID3D12Resource*>(nativeBackBuffer);
-        m_internal->rtvHandle.ptr = rtvHandlePtr;
+        if (device == nullptr) return;
+
         m_internal->device = device;
         m_internal->globalDescriptorHeap = static_cast<ID3D12DescriptorHeap*>(globalDescriptorHeap);
         m_internal->srvDescriptorSize = srvDescriptorSize;
 
-        device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_internal->allocator));
-        device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_internal->allocator.Get(), nullptr, IID_PPV_ARGS(&m_internal->commandList));
-        m_internal->commandList->Close();
+        if (FAILED(device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&m_internal->allocator))))
+        {
+            return;
+        }
+        if (FAILED(device->CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                m_internal->allocator.Get(),
+                nullptr,
+                IID_PPV_ARGS(&m_internal->commandList))))
+        {
+            m_internal->allocator.Reset();
+        }
     }
 
     D3D12CommandList::~D3D12CommandList()
@@ -108,81 +132,57 @@ namespace dy::Backends
         return m_internal->commandList.Get();
     }
 
-    void D3D12CommandList::Reset()
-    {
-        m_internal->allocator->Reset();
-        m_internal->commandList->Reset(m_internal->allocator.Get(), nullptr);
-    }
-
     void D3D12CommandList::Close()
     {
-        // 백버퍼를 PRESENT 로 전이. 추적기(D3D12Texture)를 거쳐 상태를 갱신해야
-        // 다음 프레임 재사용 시 SetRenderTargets 가 올바른 before-state 로 배리어를 친다.
-        if (m_internal->backBufferTexture != nullptr)
+        if (m_internal->commandList == nullptr || m_internal->closed) return;
+
+        for (D3D12Texture* texture : m_internal->referencedSwapchainImages)
         {
-            TransitionTexture(m_internal->commandList.Get(), m_internal->backBufferTexture, D3D12_RESOURCE_STATE_PRESENT);
+            TransitionTexture(
+                m_internal->commandList.Get(), texture, D3D12_RESOURCE_STATE_PRESENT);
         }
-        else
-        {
-            D3D12_RESOURCE_BARRIER barrier = {};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource = m_internal->backBuffer.Get();
-            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_internal->commandList->ResourceBarrier(1, &barrier);
-        }
-        m_internal->commandList->Close();
+        m_internal->closed = SUCCEEDED(m_internal->commandList->Close());
     }
 
-    void D3D12CommandList::SetBackBufferTexture(RHI::ITexture* texture)
+    bool D3D12CommandList::IsClosed() const
     {
-        m_internal->backBufferTexture = static_cast<D3D12Texture*>(texture);
+        return m_internal != nullptr && m_internal->closed;
+    }
+
+    const std::vector<D3D12Texture*>& D3D12CommandList::GetReferencedSwapchainImages() const
+    {
+        return m_internal->referencedSwapchainImages;
     }
 
     void D3D12CommandList::ClearColor(RHI::ITexture* renderTarget, float r, float g, float b, float a)
     {
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_internal->rtvHandle;
-        if (renderTarget != nullptr)
-        {
-            auto* d3dTarget = static_cast<D3D12Texture*>(renderTarget);
-            TransitionTexture(m_internal->commandList.Get(), d3dTarget, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            if (d3dTarget->HasRenderTargetView())
-            {
-                rtvHandle.ptr = d3dTarget->GetRenderTargetViewHandlePtr();
-            }
-        }
+        if (renderTarget == nullptr) return;
 
+        auto* d3dTarget = static_cast<D3D12Texture*>(renderTarget);
+        TrackSwapchainImage(m_internal->referencedSwapchainImages, d3dTarget);
+        TransitionTexture(
+            m_internal->commandList.Get(), d3dTarget, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        if (!d3dTarget->HasRenderTargetView()) return;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
+        rtvHandle.ptr = d3dTarget->GetRenderTargetViewHandlePtr();
         const float color[] = { r, g, b, a };
         m_internal->commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
     }
 
     void D3D12CommandList::ClearDepth(RHI::ITexture* depthStencil, float depth)
     {
-        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_internal->dsvHandle;
-        bool hasDSV = m_internal->hasDSV;
+        if (depthStencil == nullptr) return;
 
-        if (depthStencil != nullptr)
-        {
-            auto* d3dDepth = static_cast<D3D12Texture*>(depthStencil);
-            TransitionTexture(m_internal->commandList.Get(), d3dDepth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-            if (d3dDepth->HasDepthStencilView())
-            {
-                dsvHandle.ptr = d3dDepth->GetDepthStencilViewHandlePtr();
-                hasDSV = true;
-            }
-        }
+        auto* d3dDepth = static_cast<D3D12Texture*>(depthStencil);
+        TransitionTexture(
+            m_internal->commandList.Get(), d3dDepth, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        if (!d3dDepth->HasDepthStencilView()) return;
 
-        if (hasDSV)
-        {
-            m_internal->commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, 0, nullptr);
-        }
-    }
-
-    void D3D12CommandList::SetDepthStencilView(size_t dsvHandlePtr)
-    {
-        m_internal->dsvHandle.ptr = dsvHandlePtr;
-        m_internal->hasDSV = true;
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
+        dsvHandle.ptr = d3dDepth->GetDepthStencilViewHandlePtr();
+        m_internal->commandList->ClearDepthStencilView(
+            dsvHandle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, 0, nullptr);
     }
 
     void D3D12CommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance)
@@ -274,6 +274,7 @@ namespace dy::Backends
     {
         if (texture == nullptr) return;
         auto* d3dTexture = static_cast<D3D12Texture*>(texture);
+        TrackSwapchainImage(m_internal->referencedSwapchainImages, d3dTexture);
         TransitionTexture(m_internal->commandList.Get(), d3dTexture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
         // 그림자 맵: 전용 SRV 디스크립터 테이블(루트 파라미터 7)에 바인딩.
@@ -375,24 +376,25 @@ namespace dy::Backends
 
     void D3D12CommandList::SetRenderTargets(uint32_t numRenderTargets, RHI::ITexture** renderTargets, RHI::ITexture* depthStencil)
     {
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_internal->rtvHandle;
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
         D3D12_CPU_DESCRIPTOR_HANDLE* rtvPtr = nullptr;
         D3D12_CPU_DESCRIPTOR_HANDLE* dsvPtr = nullptr;
-        uint32_t width = 1;
-        uint32_t height = 1;
+        uint32_t width = 0;
+        uint32_t height = 0;
 
         if (numRenderTargets > 0 && renderTargets != nullptr && renderTargets[0] != nullptr)
         {
             width = renderTargets[0]->GetWidth();
             height = renderTargets[0]->GetHeight();
             auto* d3dTarget = static_cast<D3D12Texture*>(renderTargets[0]);
+            TrackSwapchainImage(m_internal->referencedSwapchainImages, d3dTarget);
             TransitionTexture(m_internal->commandList.Get(), d3dTarget, D3D12_RESOURCE_STATE_RENDER_TARGET);
             if (d3dTarget->HasRenderTargetView())
             {
                 rtvHandle.ptr = d3dTarget->GetRenderTargetViewHandlePtr();
+                rtvPtr = &rtvHandle;
             }
-            rtvPtr = &rtvHandle;
         }
 
         if (depthStencil != nullptr)

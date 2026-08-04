@@ -19,6 +19,7 @@ namespace dy::Backends
         D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
         bool hasRTV = false;
         bool hasDSV = false;
+        bool swapchainImage = false;
         uint32_t globalSrvIndex = 0xFFFFFFFFu;
     };
 
@@ -165,11 +166,18 @@ namespace dy::Backends
         }
     }
 
-    D3D12Texture::D3D12Texture(ID3D12Resource* resource, const RHI::TextureDesc& desc)
+    D3D12Texture::D3D12Texture(
+        ID3D12Resource* resource,
+        const RHI::TextureDesc& desc,
+        size_t rtvHandlePtr,
+        bool swapchainImage)
         : RHI::ITexture(desc)
         , m_internal(new D3D12TextureInternal())
     {
         m_internal->resource = resource;
+        m_internal->rtvHandle.ptr = rtvHandlePtr;
+        m_internal->hasRTV = rtvHandlePtr != 0;
+        m_internal->swapchainImage = swapchainImage;
         m_internal->state = HasUsage(desc.usage, RHI::TextureUsage::RenderTarget)
             ? D3D12_RESOURCE_STATE_PRESENT
             : D3D12_RESOURCE_STATE_COMMON;
@@ -203,6 +211,11 @@ namespace dy::Backends
     size_t D3D12Texture::GetDepthStencilViewHandlePtr() const
     {
         return m_internal->dsvHandle.ptr;
+    }
+
+    bool D3D12Texture::IsSwapchainImage() const
+    {
+        return m_internal->swapchainImage;
     }
 
     uint32_t D3D12Texture::GetResourceState() const

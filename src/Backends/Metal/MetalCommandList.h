@@ -31,7 +31,10 @@ namespace dy::Backends
 
         void Close() override;
 
-        void Begin(void* drawable);
+        bool Begin();
+        void Reset();
+        [[nodiscard]] bool IsClosed() const;
+        [[nodiscard]] bool UsesBackBuffer() const;
         void* GetNativeCommandBuffer() const;
 
         void SetNativePipelineState(void* pipelineState);

@@ -361,7 +361,7 @@ namespace
 	{
 		commandList->Close();
 		std::array<RHI::ICommandList*, 1> commandLists = { commandList };
-		device->Submit(commandLists.data(), static_cast<uint32_t>(commandLists.size()));
+		(void)device->Submit(commandLists.data(), static_cast<uint32_t>(commandLists.size()));
 	}
 
 	void BindMaterialTextures(RHI::ICommandList* commandList, const SceneMaterialState& materialState)

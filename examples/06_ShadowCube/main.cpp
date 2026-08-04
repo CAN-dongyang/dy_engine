@@ -93,9 +93,11 @@ int main()
 			camera.eye = Math::float3(camera.target.x + 7.0f * std::cos(a), camera.target.y + 7.0f * std::sin(a), camera.target.z + 3.5f);
 			renderer.SetCamera(camera);
 
-			device->BeginFrame();
-			renderer.Render(scene, device.get());
-			device->Present();
+			if(device->BeginFrame())
+			{
+				renderer.Render(scene, device.get());
+				device->Present();
+			}
 		}
 
 		renderer.Shutdown(device.get());

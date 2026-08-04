@@ -185,6 +185,16 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 		m_shadowVertexShaderSource = ReadBinaryFile(shadowVertexShaderPath);
 	}
 
+	RHI::SwapchainDesc swapchainDesc = {};
+	swapchainDesc.format = m_config.outputFormat;
+	swapchainDesc.minimumImageCount = m_config.backBufferCount;
+	swapchainDesc.presentMode = m_config.vsync ? RHI::PresentMode::Fifo : RHI::PresentMode::Immediate;
+	if(!device->CreateSwapchain(swapchainDesc)) return false;
+
+	RHI::ITexture* backBuffer = device->GetBackBuffer();
+	if(backBuffer == nullptr || backBuffer->GetFormat() == RHI::Format::Unknown) return false;
+	if(m_config.outputFormat != RHI::Format::Unknown && backBuffer->GetFormat() != m_config.outputFormat) return false;
+
 	m_clipYFlip = device->RequiresClipSpaceYFlip();
 
 	BuildRenderPassPlan();
@@ -342,22 +352,15 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
 {
-	// 렌더 타깃 포맷은 실제 백버퍼에서 파생한다(단일 진실원). 이래야 PSO 가 실제 타깃과
-	// 항상 일치하고, 백엔드별 스왑체인 포맷 불일치(감마 차이)가 생기지 않는다.
-	if(RHI::ITexture* backBuffer = device->GetBackBuffer())
-	{
-		if(backBuffer->GetFormat() != RHI::Format::Unknown)
-		{
-			m_config.renderTargetFormat = backBuffer->GetFormat();
-		}
-	}
+	RHI::ITexture* backBuffer = device->GetBackBuffer();
+	if(backBuffer == nullptr || backBuffer->GetFormat() == RHI::Format::Unknown) return;
 
 	RHI::GraphicsPipelineDesc desc = {};
 	desc.vertexShader = m_vertexShaderSource.data();
 	desc.vertexShaderSize = m_vertexShaderSource.size();
 	desc.pixelShader = m_pixelShaderSource.data();
 	desc.pixelShaderSize = m_pixelShaderSource.size();
-	desc.renderTargetFormat = m_config.renderTargetFormat;
+	desc.renderTargetFormat = backBuffer->GetFormat();
 	desc.depthStencilFormat = m_config.depthStencilFormat;
 	desc.depthEnable = m_config.depthStencilFormat != RHI::Format::Unknown;
 	desc.wireframe = false;

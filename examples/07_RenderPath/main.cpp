@@ -304,9 +304,11 @@ int main(int argc, char** argv)
 			rotated.direction = Math::float3(std::cos(a) * 0.6f, std::sin(a) * 0.6f, 0.6f);
 			scene.SetDirectionalLight(ToIndex(lightId), rotated);
 
-			device->BeginFrame();
-			renderer.Render(scene, device.get());
-			device->Present();
+			if(device->BeginFrame())
+			{
+				renderer.Render(scene, device.get());
+				device->Present();
+			}
 
 			// 1초마다 프레임타임/FPS 출력.
 			++framesSinceReport;

@@ -53,7 +53,9 @@ namespace dy::Graphics
 		const char* vertexShaderPath = nullptr;
 		const char* pixelShaderPath = nullptr;
 		const char* shadowVertexShaderPath = nullptr;
-		RHI::Format renderTargetFormat = RHI::Format::R8G8B8A8_UNORM;
+		RHI::Format outputFormat = RHI::Format::B8G8R8A8_UNORM;
+		uint32_t backBufferCount = 2;
+		bool vsync = true;
 		RHI::Format depthStencilFormat = RHI::Format::D32_FLOAT;
 		Math::float4 clearColor = Math::float4(0.08f, 0.10f, 0.14f, 1.0f);
 		Math::float4x4 viewProjectionMatrix = Math::float4x4::Identity();

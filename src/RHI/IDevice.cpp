@@ -25,7 +25,11 @@ IDevice* IDevice::Create(const void* windowHandle, const DeviceDesc& desc)
 	if(device)
 	{
 		device->SetDesc(desc);
-		device->Initialize(windowHandle, device->GetDesc());
+		if(device->Initialize(windowHandle, device->GetDesc()) != 0)
+		{
+			delete device;
+			device = nullptr;
+		}
 	}
 	return device;
 }
