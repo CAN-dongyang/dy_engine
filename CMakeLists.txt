@@ -16,7 +16,6 @@ add_library(${PROJECT_NAME} STATIC
 	"src/Graphics/GpuScene.cpp"
 	"src/Graphics/ImageFile.cpp"
 	"src/Graphics/Mesh.cpp"
-	"src/Graphics/ShadowMath.cpp"
 	"src/Platform/Window.cpp"
 )
 

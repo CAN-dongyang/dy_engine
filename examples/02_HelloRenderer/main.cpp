@@ -23,6 +23,8 @@ int main()
 		if(!renderer.Initialize(device.get(), rendererConfig)) return -1;
 
 		Graphics::Scene scene;
+		[[maybe_unused]] const DirectionalLightID lightId =
+			scene.CreateDirectionalLight(Graphics::DirectionalLight{});
 
 		Graphics::MeshData triangleMesh = {};
 		triangleMesh.vertices = {

@@ -49,7 +49,6 @@ namespace dy::Graphics
 		void SetCamera(const CameraDesc& camera);
 		void SetViewProjection(const Math::float4x4& viewProjection);
 		void SetCameraPosition(const Math::float3& cameraPosition);
-		void SetDirectionalLight(const Math::float3& direction, const Math::float3& color, float intensity);
 		void SetAmbientLight(const Math::float3& color, float intensity);
 		void SetPBR(const PBRDesc& pbr);
 		void SetEnvironmentLight(const EnvironmentDesc& environment);
@@ -65,7 +64,6 @@ namespace dy::Graphics
 		[[nodiscard]] bool UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device, RHI::ICommandList& commandList);
 		[[nodiscard]] bool UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device, RHI::ICommandList& commandList);
 		[[nodiscard]] bool IsRenderPassEnabled(RenderPassKind passKind) const;
-		[[nodiscard]] bool IsShadowEnabled() const;
 
 		RendererDesc m_config = {};
 		std::vector<RenderPassDesc> m_renderPasses;

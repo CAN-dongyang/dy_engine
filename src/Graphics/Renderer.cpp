@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "Graphics/Private/RendererShaderLayout.h"
 #include "Graphics/RenderPath.h"
 #include "Graphics/Scene.h"
-#include "Graphics/ShadowMath.h"
 #include "Math/Math.h"
 #include "RHI/Buffer.h"
 #include "RHI/ICommandList.h"
@@ -32,6 +33,107 @@ namespace Layout = dy::Graphics::Private::RendererShaderLayout;
 
 namespace
 {
+	[[nodiscard]] Math::float3 SelectShadowUpVector(const Math::float3& lightForward)
+	{
+		return std::abs(lightForward.z) > 0.95f
+			? Math::float3(0.0f, 1.0f, 0.0f)
+			: Math::float3(0.0f, 0.0f, 1.0f);
+	}
+
+	[[nodiscard]] Math::float4x4 ComputeDirectionalLightViewProj(
+		const Math::float3& lightDirection,
+		const ShadowMapDesc& desc)
+	{
+		const Math::float3 lightForward = Normalize(lightDirection);
+		const Math::float3 lightOrigin(
+			desc.sceneCenter.x + lightForward.x * desc.lightDistance,
+			desc.sceneCenter.y + lightForward.y * desc.lightDistance,
+			desc.sceneCenter.z + lightForward.z * desc.lightDistance);
+		const Math::float4x4 view = Math::LookAtRH(
+			lightOrigin,
+			desc.sceneCenter,
+			SelectShadowUpVector(lightForward));
+		return Math::OrthographicRH_ZO(
+			desc.orthoWidth,
+			desc.orthoHeight,
+			desc.nearPlane,
+			desc.farPlane) * view;
+	}
+
+	[[nodiscard]] ShadowMapDesc FitDirectionalShadowMapToBounds(
+		const Math::float3& lightDirection,
+		const ShadowMapDesc& baseDesc,
+		const Math::float3& boundsMin,
+		const Math::float3& boundsMax,
+		float padding)
+	{
+		ShadowMapDesc desc = baseDesc;
+		if(boundsMin.x > boundsMax.x || boundsMin.y > boundsMax.y || boundsMin.z > boundsMax.z)
+		{
+			return desc;
+		}
+
+		padding = std::max(padding, 0.0f);
+		const Math::float3 center(
+			(boundsMin.x + boundsMax.x) * 0.5f,
+			(boundsMin.y + boundsMax.y) * 0.5f,
+			(boundsMin.z + boundsMax.z) * 0.5f);
+		const Math::float3 halfExtent(
+			(boundsMax.x - boundsMin.x) * 0.5f,
+			(boundsMax.y - boundsMin.y) * 0.5f,
+			(boundsMax.z - boundsMin.z) * 0.5f);
+		const float radius = std::max(Length(halfExtent), 0.1f);
+
+		const Math::float3 lightForward = Normalize(lightDirection);
+		desc.sceneCenter = center;
+		desc.lightDistance = std::max(radius + padding + desc.nearPlane, 0.5f);
+
+		const Math::float3 lightOrigin(
+			desc.sceneCenter.x + lightForward.x * desc.lightDistance,
+			desc.sceneCenter.y + lightForward.y * desc.lightDistance,
+			desc.sceneCenter.z + lightForward.z * desc.lightDistance);
+		const Math::float4x4 view = Math::LookAtRH(
+			lightOrigin,
+			desc.sceneCenter,
+			SelectShadowUpVector(lightForward));
+
+		const Math::float3 corners[] = {
+			Math::float3(boundsMin.x, boundsMin.y, boundsMin.z),
+			Math::float3(boundsMax.x, boundsMin.y, boundsMin.z),
+			Math::float3(boundsMin.x, boundsMax.y, boundsMin.z),
+			Math::float3(boundsMax.x, boundsMax.y, boundsMin.z),
+			Math::float3(boundsMin.x, boundsMin.y, boundsMax.z),
+			Math::float3(boundsMax.x, boundsMin.y, boundsMax.z),
+			Math::float3(boundsMin.x, boundsMax.y, boundsMax.z),
+			Math::float3(boundsMax.x, boundsMax.y, boundsMax.z)
+		};
+
+		float minX = std::numeric_limits<float>::max();
+		float minY = std::numeric_limits<float>::max();
+		float minZ = std::numeric_limits<float>::max();
+		float maxX = -std::numeric_limits<float>::max();
+		float maxY = -std::numeric_limits<float>::max();
+		float maxZ = -std::numeric_limits<float>::max();
+		for(const Math::float3& corner : corners)
+		{
+			const Math::float3 lightSpace = Math::TransformPoint(view, corner);
+			minX = std::min(minX, lightSpace.x);
+			minY = std::min(minY, lightSpace.y);
+			minZ = std::min(minZ, lightSpace.z);
+			maxX = std::max(maxX, lightSpace.x);
+			maxY = std::max(maxY, lightSpace.y);
+			maxZ = std::max(maxZ, lightSpace.z);
+		}
+
+		desc.orthoWidth = std::max(maxX - minX + padding * 2.0f, 0.1f);
+		desc.orthoHeight = std::max(maxY - minY + padding * 2.0f, 0.1f);
+		const float depthRange = std::max(maxZ - minZ + padding * 2.0f, 0.1f);
+		desc.farPlane = std::max(
+			desc.nearPlane + depthRange + desc.lightDistance,
+			desc.nearPlane + 0.1f);
+		return desc;
+	}
+
 	[[nodiscard]] const DirectionalLight* GetPrimaryDirectionalLight(const Scene& scene)
 	{
 		return scene.GetDirectionalLightCount() > 0 ? &scene.GetDirectionalLight(0) : nullptr;
@@ -39,7 +141,9 @@ namespace
 
 	[[nodiscard]] const PointLight* GetPrimaryPointLight(const Scene& scene)
 	{
-		return scene.GetPointLightCount() > 0 ? &scene.GetPointLight(0) : nullptr;
+		if(scene.GetPointLightCount() == 0) return nullptr;
+		const PointLight& light = scene.GetPointLight(0);
+		return light.intensity > 0.0f && light.range > 0.0f ? &light : nullptr;
 	}
 
 	[[nodiscard]] Math::Bounds3 ComputeShadowBounds(const Scene& scene)
@@ -170,13 +274,6 @@ void Renderer::SetCameraPosition(const Math::float3& cameraPosition)
 	m_config.cameraPosition = cameraPosition;
 }
 
-void Renderer::SetDirectionalLight(const Math::float3& direction, const Math::float3& color, float intensity)
-{
-	m_config.directionalLightDirection = direction;
-	m_config.directionalLightColor = color;
-	m_config.directionalLightIntensity = intensity;
-}
-
 void Renderer::SetAmbientLight(const Math::float3& color, float intensity)
 {
 	m_config.ambientColor = color;
@@ -299,7 +396,9 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 
 	context.lightingBuffer = m_lightingBuffer;
 	context.shadowMatrixBuffer = m_shadowMatrixBuffer;
-	if(m_shadowPassEnabled)
+	const DirectionalLight* shadowLight = GetPrimaryDirectionalLight(scene);
+	if(m_shadowPassEnabled && GetPrimaryPointLight(scene) == nullptr &&
+		shadowLight != nullptr && shadowLight->castShadow)
 	{
 		if(m_shadowDepthTarget != nullptr && m_shadowPipeline != nullptr)
 		{
@@ -428,9 +527,7 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 		m_config.shadowRasterSlopeBias,
 		0.0f
 	};
-	shadowDesc.depthStencil.format = m_config.depthStencilFormat != RHI::Format::Unknown
-		? m_config.depthStencilFormat
-		: RHI::Format::D32_FLOAT;
+	shadowDesc.depthStencil.format = m_config.shadowFormat;
 	shadowDesc.depthStencil.depthTestEnabled = true;
 	shadowDesc.depthStencil.depthWriteEnabled = true;
 	shadowDesc.depthStencil.depthCompareOp = RHI::CompareOp::Less;
@@ -587,16 +684,12 @@ void Renderer::EnsureShadowDepthTarget(RHI::IDevice* device)
 		m_shadowDepthState = RHI::ResourceState::Undefined;
 	}
 
-	const RHI::Format shadowFormat = m_config.depthStencilFormat != RHI::Format::Unknown
-		? m_config.depthStencilFormat
-		: RHI::Format::D32_FLOAT;
-
 	RHI::TextureDesc shadowDesc = {};
 	shadowDesc.width = resolution;
 	shadowDesc.height = resolution;
 	shadowDesc.depthOrArraySize = 1;
 	shadowDesc.mipLevels = 1;
-	shadowDesc.format = shadowFormat;
+	shadowDesc.format = m_config.shadowFormat;
 	shadowDesc.usage = RHI::TextureUsage::DepthStencil | RHI::TextureUsage::ShaderResource;
 	m_shadowDepthTarget = device->CreateTexture(shadowDesc);
 }
@@ -664,12 +757,16 @@ bool Renderer::UpdateLightingBuffer(
 
 	const DirectionalLight* light = GetPrimaryDirectionalLight(scene);
 	const PointLight* pointLight = GetPrimaryPointLight(scene);
-	const Math::float3 lightDirection = light != nullptr ? light->direction : m_config.directionalLightDirection;
-	const Math::float3 lightColor = light != nullptr ? light->color : m_config.directionalLightColor;
-	const float lightIntensity = light != nullptr ? light->intensity : m_config.directionalLightIntensity;
-	const bool castsShadow = pointLight != nullptr ? pointLight->castShadow : (light != nullptr ? light->castShadow : true);
-	const float shadowStrength = pointLight != nullptr ? pointLight->shadowStrength : (light != nullptr ? light->shadowStrength : m_config.shadowStrength);
-	const bool shadowsEnabled = IsShadowEnabled() && castsShadow;
+	const Math::float3 lightDirection = light != nullptr
+		? light->direction
+		: Math::float3(0.0f, 0.0f, 1.0f);
+	const Math::float3 lightColor = light != nullptr
+		? light->color
+		: Math::float3(0.0f, 0.0f, 0.0f);
+	const float lightIntensity = light != nullptr ? light->intensity : 0.0f;
+	const bool shadowsEnabled = m_shadowPassEnabled && pointLight == nullptr &&
+		light != nullptr && light->castShadow;
+	const float shadowStrength = shadowsEnabled ? light->shadowStrength : 0.0f;
 
 	Layout::RendererLightingConstants lighting = {};
 	lighting.cameraPosition = Math::float4(
@@ -767,41 +864,25 @@ bool Renderer::UpdateShadowBuffer(
 	if(m_shadowMatrixBuffer == nullptr) return false;
 
 	const DirectionalLight* light = GetPrimaryDirectionalLight(scene);
-	const PointLight* pointLight = GetPrimaryPointLight(scene);
-	Math::float3 lightDirection = light != nullptr ? light->direction : m_config.directionalLightDirection;
+	const bool shadowsEnabled = m_shadowPassEnabled && GetPrimaryPointLight(scene) == nullptr &&
+		light != nullptr && light->castShadow;
+	const Math::float3 lightDirection = light != nullptr
+		? light->direction
+		: Math::float3(0.0f, 0.0f, 1.0f);
 	ShadowMapDesc shadowMap = m_config.shadowMap;
-	const Math::Bounds3 bounds = IsShadowEnabled() && m_config.autoFitShadowMap ? ComputeShadowBounds(scene) : Math::Bounds3{};
-	if(pointLight != nullptr)
+	const Math::Bounds3 bounds = shadowsEnabled && m_config.autoFitShadowMap
+		? ComputeShadowBounds(scene)
+		: Math::Bounds3{};
+	if(bounds.valid)
 	{
-		shadowMap.farPlane = std::max(shadowMap.farPlane, pointLight->range);
-		lightDirection = NormalizeOr(pointLight->direction, Math::float3(0.0f, 0.0f, -1.0f));
-		if(bounds.valid)
-		{
-			const Math::float3 center = bounds.Center();
-			lightDirection = NormalizeOr(center - pointLight->position, lightDirection);
-			shadowMap.sceneCenter = center;
-		}
-	}
-	else if(IsShadowEnabled() && m_config.autoFitShadowMap)
-	{
-		if(bounds.valid)
-		{
-			shadowMap = FitDirectionalShadowMapToBounds(
-				lightDirection, m_config.shadowMap, bounds.min, bounds.max, m_config.shadowBoundsPadding);
-		}
+		shadowMap = FitDirectionalShadowMapToBounds(
+			lightDirection, m_config.shadowMap, bounds.min, bounds.max, m_config.shadowBoundsPadding);
 	}
 
 	Layout::RendererShadowConstants shadow = {};
-	if(IsShadowEnabled() && pointLight != nullptr)
-	{
-		shadow.lightViewProjectionMatrix = ComputeSpotLightViewProj(pointLight->position, lightDirection, shadowMap);
-	}
-	else
-	{
-		shadow.lightViewProjectionMatrix = IsShadowEnabled()
-			? ComputeDirectionalLightViewProj(lightDirection, shadowMap)
-			: Math::float4x4::Identity();
-	}
+	shadow.lightViewProjectionMatrix = shadowsEnabled
+		? ComputeDirectionalLightViewProj(lightDirection, shadowMap)
+		: Math::float4x4::Identity();
 
 	if(m_shadowMatrixBufferReady)
 	{
@@ -840,11 +921,6 @@ bool Renderer::UpdateShadowBuffer(
 	};
 	commandList.ResourceBarrier(&after, 1);
 	return true;
-}
-
-bool Renderer::IsShadowEnabled() const
-{
-	return m_shadowPassEnabled;
 }
 
 bool Renderer::IsRenderPassEnabled(RenderPassKind passKind) const

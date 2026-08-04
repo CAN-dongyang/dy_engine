@@ -24,9 +24,6 @@ namespace dy::Graphics
 		float range = 6.0f;
 		Math::float3 color = Math::float3(1.0f, 0.94f, 0.82f);
 		float intensity = 6.0f;
-		Math::float3 direction = Math::float3(0.0f, 0.0f, -1.0f);
-		bool castShadow = true;
-		float shadowStrength = 0.5f;
 	};
 
 	class Scene

@@ -97,9 +97,6 @@ namespace dy::Graphics
 		ModelLoadOptions loadOptions = {};
 	};
 
-	// 그림자/광원 시점 수학(ShadowDesc, ShadowMapDesc, Compute*LightViewProj, Fit*, BuildShadowMesh)은
-	// Graphics/ShadowMath.h 로 분리됨(메시와 별개 관심사).
-
 	struct TextureAsset
 	{
 		std::string sourcePath;

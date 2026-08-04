@@ -4,7 +4,6 @@
 #include "Math/Math.h"
 #include "RHI/Format.h"
 #include "Graphics/Mesh.h"
-#include "Graphics/ShadowMath.h" // ShadowMapDesc
 
 namespace dy::Graphics
 {
@@ -29,6 +28,17 @@ namespace dy::Graphics
 		float specularIntensity = 1.0f;
 	};
 
+	struct ShadowMapDesc
+	{
+		uint32_t resolution = 2048;
+		float orthoWidth = 6.0f;
+		float orthoHeight = 6.0f;
+		float nearPlane = 0.1f;
+		float farPlane = 20.0f;
+		Math::float3 sceneCenter = Math::float3(0.0f, 0.0f, 0.0f);
+		float lightDistance = 8.0f;
+	};
+
 	struct CameraDesc
 	{
 		Math::float3 eye = Math::float3(0.0f, 0.0f, 3.0f);
@@ -50,19 +60,16 @@ namespace dy::Graphics
 		uint32_t backBufferCount = 2;
 		bool vsync = true;
 		RHI::Format depthStencilFormat = RHI::Format::D32_FLOAT;
+		RHI::Format shadowFormat = RHI::Format::D32_FLOAT;
 		Math::float4 clearColor = Math::float4(0.08f, 0.10f, 0.14f, 1.0f);
 		Math::float4x4 viewProjectionMatrix = Math::float4x4::Identity();
 		Math::float3 cameraPosition = Math::float3(0.0f, 0.0f, 2.2f);
-		Math::float3 directionalLightDirection = Math::float3(0.35f, 0.65f, 0.68f);
-		Math::float3 directionalLightColor = Math::float3(1.0f, 0.94f, 0.82f);
-		float directionalLightIntensity = 4.0f;
 		Math::float3 ambientColor = Math::float3(1.0f, 1.0f, 1.0f);
 		float ambientIntensity = 0.035f;
 		PBRDesc pbr = {};
 		EnvironmentDesc environment = {};
 		bool enableShadows = false;
 		bool enableMainPass = true;
-		float shadowStrength = 0.45f;
 		ShadowMapDesc shadowMap = {};
 		bool autoFitShadowMap = true;
 		float shadowBoundsPadding = 0.25f;
