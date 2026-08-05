@@ -1,6 +1,5 @@
-#include "Graphics/GpuScene.h"
+#include "Graphics/Private/TextureCache.h"
 
-#include "Graphics/ImageFile.h"
 #include "Graphics/Scene.h"
 #include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
@@ -8,12 +7,26 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <limits>
+#include <string>
+#include <vector>
 
-namespace dy::Graphics
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO_DEPRECATED
+#include "stb_image.h"
+
+namespace dy::Graphics::Private
 {
 	namespace
 	{
+		struct DecodedImage
+		{
+			uint32_t width = 0;
+			uint32_t height = 0;
+			std::vector<uint8_t> pixels;
+		};
+
 		struct UploadImageView
 		{
 			uint32_t width = 0;
@@ -23,7 +36,32 @@ namespace dy::Graphics
 			const uint8_t* pixels = nullptr;
 		};
 
-		[[nodiscard]] UploadImageView ResolveTextureUpload(const TextureAsset& textureData, ImageFile& loadedImage)
+		[[nodiscard]] DecodedImage DecodeRgba8(const std::string& path)
+		{
+			DecodedImage image;
+			if(path.empty()) return image;
+
+			int width = 0;
+			int height = 0;
+			int channels = 0;
+			unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 4);
+			if(data == nullptr || width <= 0 || height <= 0)
+			{
+				if(data != nullptr) stbi_image_free(data);
+				return image;
+			}
+
+			image.width = static_cast<uint32_t>(width);
+			image.height = static_cast<uint32_t>(height);
+			image.pixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u);
+			std::memcpy(image.pixels.data(), data, image.pixels.size());
+			stbi_image_free(data);
+			return image;
+		}
+
+		[[nodiscard]] UploadImageView ResolveTextureUpload(
+			const TextureAsset& textureData,
+			DecodedImage& decodedImage)
 		{
 			const uint64_t embeddedSize = static_cast<uint64_t>(textureData.width) * textureData.height * 4u;
 			if(textureData.width > 0u && textureData.height > 0u &&
@@ -39,27 +77,31 @@ namespace dy::Graphics
 				};
 			}
 
-			loadedImage = LoadImageFile(textureData.sourcePath);
-			if(!loadedImage.IsValid() ||
-				loadedImage.GetWidth() > std::numeric_limits<uint32_t>::max() / 4u) return {};
+			decodedImage = DecodeRgba8(textureData.sourcePath);
+			if(decodedImage.pixels.empty() ||
+				decodedImage.width == 0u ||
+				decodedImage.height == 0u ||
+				decodedImage.width > std::numeric_limits<uint32_t>::max() / 4u)
+			{
+				return {};
+			}
 			return UploadImageView{
-				loadedImage.GetWidth(),
-				loadedImage.GetHeight(),
-				loadedImage.GetRowPitch(),
-				loadedImage.GetPixels().size(),
-				loadedImage.GetPixels().data()
+				decodedImage.width,
+				decodedImage.height,
+				decodedImage.width * 4u,
+				decodedImage.pixels.size(),
+				decodedImage.pixels.data()
 			};
 		}
 	}
 
-	bool GpuScene::SyncTextures(const Scene& scene, RHI::IDevice* device)
+	bool TextureCache::Sync(const Scene& scene, RHI::IDevice* device)
 	{
 		if(device == nullptr) return false;
 		struct SubmittedState
 		{
 			TextureSlot* slot = nullptr;
 			RHI::ResourceState state = RHI::ResourceState::Undefined;
-			bool ready = false;
 		};
 
 		const uint32_t textureCount = scene.GetTextureCount();
@@ -71,11 +113,11 @@ namespace dy::Graphics
 		for(uint32_t textureIndex = 0; textureIndex < textureCount; ++textureIndex)
 		{
 			TextureSlot& slot = m_textures[textureIndex];
-			if(slot.ready) continue;
+			if(slot.state == RHI::ResourceState::ShaderResource) continue;
 
 			const TextureAsset& textureData = scene.GetTexture(static_cast<TextureID>(textureIndex));
-			ImageFile loadedImage;
-			const UploadImageView upload = ResolveTextureUpload(textureData, loadedImage);
+			DecodedImage decodedImage;
+			const UploadImageView upload = ResolveTextureUpload(textureData, decodedImage);
 			if(upload.pixels == nullptr) continue;
 			const uint64_t uploadSize = static_cast<uint64_t>(upload.rowPitch) * upload.height;
 			if(uploadSize > upload.size || uploadSize > std::numeric_limits<uint32_t>::max())
@@ -99,10 +141,7 @@ namespace dy::Graphics
 				uploadFailed = true;
 				continue;
 			}
-			if(commandList == nullptr)
-			{
-				commandList = device->AcquireCommandList();
-			}
+			if(commandList == nullptr) commandList = device->AcquireCommandList();
 			if(commandList == nullptr)
 			{
 				uploadFailed = true;
@@ -122,16 +161,15 @@ namespace dy::Graphics
 				{}
 			};
 			commandList->ResourceBarrier(&beforeCopy, 1);
-			if(
-				!device->UpdateTexture(
-					*commandList,
-					slot.texture,
-					0,
-					0,
-					upload.pixels,
-					static_cast<uint32_t>(uploadSize),
-					upload.rowPitch,
-					static_cast<uint32_t>(uploadSize)))
+			if(!device->UpdateTexture(
+				*commandList,
+				slot.texture,
+				0,
+				0,
+				upload.pixels,
+				static_cast<uint32_t>(uploadSize),
+				upload.rowPitch,
+				static_cast<uint32_t>(uploadSize)))
 			{
 				uploadFailed = true;
 				const RHI::ResourceBarrierDesc restore = {
@@ -142,7 +180,7 @@ namespace dy::Graphics
 					{}
 				};
 				commandList->ResourceBarrier(&restore, 1);
-				submittedStates.push_back({ &slot, RHI::ResourceState::Common, false });
+				submittedStates.push_back({ &slot, RHI::ResourceState::Common });
 				continue;
 			}
 
@@ -154,7 +192,7 @@ namespace dy::Graphics
 				{}
 			};
 			commandList->ResourceBarrier(&barrier, 1);
-			submittedStates.push_back({ &slot, RHI::ResourceState::ShaderResource, true });
+			submittedStates.push_back({ &slot, RHI::ResourceState::ShaderResource });
 		}
 
 		if(commandList == nullptr) return !uploadFailed;
@@ -164,12 +202,11 @@ namespace dy::Graphics
 		for(const SubmittedState& submitted : submittedStates)
 		{
 			submitted.slot->state = submitted.state;
-			submitted.slot->ready = submitted.ready;
 		}
 		return !uploadFailed;
 	}
 
-	void GpuScene::Shutdown(RHI::IDevice* device)
+	void TextureCache::Shutdown(RHI::IDevice* device)
 	{
 		if(device == nullptr) return;
 		for(TextureSlot& slot : m_textures)
@@ -179,18 +216,17 @@ namespace dy::Graphics
 				device->DestroyTexture(slot.texture);
 				slot.texture = nullptr;
 				slot.state = RHI::ResourceState::Undefined;
-				slot.ready = false;
 			}
 		}
 		m_textures.clear();
 	}
 
-	RHI::TextureHandle GpuScene::ResolveTexture(TextureID textureId) const
+	RHI::TextureHandle TextureCache::Resolve(TextureID textureId) const
 	{
 		if(!IsValid(textureId)) return nullptr;
 		const uint32_t textureIndex = ToIndex(textureId);
 		if(textureIndex >= m_textures.size()) return nullptr;
-		return m_textures[textureIndex].ready ? m_textures[textureIndex].texture : nullptr;
+		const TextureSlot& slot = m_textures[textureIndex];
+		return slot.state == RHI::ResourceState::ShaderResource ? slot.texture : nullptr;
 	}
-
 }

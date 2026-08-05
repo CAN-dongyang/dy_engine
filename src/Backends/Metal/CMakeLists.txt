@@ -27,6 +27,9 @@ set_source_files_properties(
 
 target_link_libraries(${BACKEND_NAME} PRIVATE
     Engine_Options
+)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
     "-framework AppKit"
     "-framework Metal"
     "-framework Foundation"

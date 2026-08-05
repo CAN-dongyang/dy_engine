@@ -21,10 +21,4 @@ namespace dy
 	{
 		Math::float4x4 worldMatrix;
 	};
-	struct alignas(16) Camera
-	{
-		Math::float4x4 viewMatrix;
-		Math::float4x4 projectionMatrix;
-		Math::float3   worldPosition; // 16-byte
-	};
 }

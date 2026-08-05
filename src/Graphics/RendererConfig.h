@@ -2,16 +2,23 @@
 #include <cstdint>
 
 #include "Math/Math.h"
-#include "RHI/Format.h"
 #include "Graphics/Mesh.h"
 
 namespace dy::Graphics
 {
-	enum class RendererBindingMode : uint32_t
+	enum class ColorFormat : uint8_t
 	{
-		PerDrawBind = 0,
-		BatchedBind = 1,
-		Bindless = 2
+		RGBA8Unorm,
+		BGRA8Unorm,
+		RGBA8UnormSrgb,
+		BGRA8UnormSrgb
+	};
+
+	enum class DepthFormat : uint8_t
+	{
+		None,
+		D32Float,
+		D24UnormStencil8
 	};
 
 	struct PBRDesc
@@ -28,6 +35,13 @@ namespace dy::Graphics
 		float specularIntensity = 1.0f;
 	};
 
+	struct Camera
+	{
+		Math::float4x4 view = Math::float4x4::Identity();
+		Math::float4x4 projection = Math::float4x4::Identity();
+		Math::float3 position = Math::float3(0.0f, 0.0f, 0.0f);
+	};
+
 	struct ShadowMapDesc
 	{
 		uint32_t resolution = 2048;
@@ -39,37 +53,19 @@ namespace dy::Graphics
 		float lightDistance = 8.0f;
 	};
 
-	struct CameraDesc
-	{
-		Math::float3 eye = Math::float3(0.0f, 0.0f, 3.0f);
-		Math::float3 target = Math::float3(0.0f, 0.0f, 0.0f);
-		Math::float3 up = Math::float3(0.0f, 0.0f, 1.0f);
-		float fovYRadians = 1.0472f;   // 원근 투영용(약 60도)
-		float aspect = 16.0f / 9.0f;
-		float nearPlane = 0.1f;
-		float farPlane = 100.0f;
-		bool orthographic = false;     // true 면 ortho* 사용
-		float orthoWidth = 0.0f;
-		float orthoHeight = 0.0f;
-	};
-
 	struct RendererDesc
 	{
-		RendererBindingMode bindingMode = RendererBindingMode::PerDrawBind;
-		RHI::Format outputFormat = RHI::Format::B8G8R8A8_UNORM;
+		ColorFormat outputFormat = ColorFormat::BGRA8Unorm;
 		uint32_t backBufferCount = 2;
 		bool vsync = true;
-		RHI::Format depthStencilFormat = RHI::Format::D32_FLOAT;
-		RHI::Format shadowFormat = RHI::Format::D32_FLOAT;
+		DepthFormat depthStencilFormat = DepthFormat::D32Float;
+		DepthFormat shadowFormat = DepthFormat::D32Float;
 		Math::float4 clearColor = Math::float4(0.08f, 0.10f, 0.14f, 1.0f);
-		Math::float4x4 viewProjectionMatrix = Math::float4x4::Identity();
-		Math::float3 cameraPosition = Math::float3(0.0f, 0.0f, 2.2f);
 		Math::float3 ambientColor = Math::float3(1.0f, 1.0f, 1.0f);
 		float ambientIntensity = 0.035f;
 		PBRDesc pbr = {};
 		EnvironmentDesc environment = {};
 		bool enableShadows = false;
-		bool enableMainPass = true;
 		ShadowMapDesc shadowMap = {};
 		bool autoFitShadowMap = true;
 		float shadowBoundsPadding = 0.25f;

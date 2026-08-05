@@ -105,14 +105,6 @@ namespace dy::Graphics
 		std::vector<uint8_t> rgba8 = {};
 	};
 
-	class ModelLoader
-	{
-	public:
-		static bool Load(const std::string& path, ModelData& outModel, const ModelLoadOptions& options = {});
-		static bool LoadMesh(const std::string& path, MeshData& outMesh, ModelMaterialInfo* outMaterial = nullptr, const ModelLoadOptions& options = {});
-		static bool LoadMesh(const std::string& path, MeshData& outMesh, std::string* outBaseColorTexturePath, const ModelLoadOptions& options = {});
-	};
-
 	[[nodiscard]] bool LoadModel(const std::string& path, ModelData& outModel, const ModelLoadOptions& options = {});
 	[[nodiscard]] bool LoadMesh(const std::string& path, MeshData& outMesh, ModelMaterialInfo* outMaterial = nullptr, const ModelLoadOptions& options = {});
 	[[nodiscard]] bool LoadMesh(const std::string& path, MeshData& outMesh, std::string* outBaseColorTexturePath, const ModelLoadOptions& options = {});

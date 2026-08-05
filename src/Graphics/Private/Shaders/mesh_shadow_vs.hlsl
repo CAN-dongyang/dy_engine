@@ -10,9 +10,9 @@ cbuffer DrawConstants : register(
     column_major float4x4 viewProjectionMatrix;
     column_major float4x4 modelMatrix;
     uint textureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     float4 emissiveColor;
     float4 baseColor;
     float4 materialParams;
@@ -25,16 +25,7 @@ cbuffer ShadowMatrix : register(
     column_major float4x4 lightViewProjectionMatrix;
 };
 
-StructuredBuffer<float4x4> InstanceTransforms : register(
-    REGISTER_TOKEN(t, RENDERER_BINDING_TRANSFORM_STORAGE),
-    REGISTER_TOKEN(space, RENDERER_DESCRIPTOR_SET));
-
-float4 main(float3 position : TEXCOORD0, uint instanceId : SV_InstanceID) : SV_POSITION
+float4 main(float3 position : TEXCOORD0) : SV_POSITION
 {
-    float4x4 resolvedModelMatrix = modelMatrix;
-    if (instanceBase != 0u)
-    {
-        resolvedModelMatrix = InstanceTransforms[instanceBase - 1u + instanceId];
-    }
-    return mul(lightViewProjectionMatrix, mul(resolvedModelMatrix, float4(position, 1.0)));
+    return mul(lightViewProjectionMatrix, mul(modelMatrix, float4(position, 1.0)));
 }

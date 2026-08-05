@@ -3,21 +3,31 @@
 
 #include "StockShaderLayout.inc"
 
+#ifndef RENDERER_ENABLE_SHADOWS
+#error RENDERER_ENABLE_SHADOWS must be defined
+#endif
+
 layout(location = 0) in vec2 fragUv;
 layout(location = 1) in vec3 fragWorldPosition;
 layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec4 fragTangent;
+#if RENDERER_ENABLE_SHADOWS
 layout(location = 4) in vec4 fragLightSpacePosition;
+#endif
 layout(location = 0) out vec4 outColor;
 
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_BASE_COLOR_TEXTURE) uniform texture2D baseColorTexture;
+#if RENDERER_ENABLE_SHADOWS
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_SHADOW_TEXTURE) uniform texture2D shadowMap;
+#endif
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_METALLIC_ROUGHNESS_TEXTURE) uniform texture2D metallicRoughnessTexture;
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_NORMAL_TEXTURE) uniform texture2D normalTexture;
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_OCCLUSION_TEXTURE) uniform texture2D occlusionTexture;
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_EMISSIVE_TEXTURE) uniform texture2D emissiveTexture;
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_MATERIAL_SAMPLER) uniform sampler materialSampler;
+#if RENDERER_ENABLE_SHADOWS
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_SHADOW_SAMPLER) uniform sampler shadowSampler;
+#endif
 
 layout(set = RENDERER_DESCRIPTOR_SET, binding = RENDERER_BINDING_LIGHTING_CONSTANTS) uniform RendererLighting {
     vec4 cameraPosition;
@@ -35,9 +45,9 @@ layout(push_constant) uniform DrawConstants {
     mat4 viewProjectionMatrix;
     mat4 modelMatrix;
     uint textureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     vec4 emissiveColor;
     vec4 baseColor;
     vec4 materialParams;
@@ -95,6 +105,7 @@ vec3 GetNormal() {
     return normalize(tbn * tangentNormal);
 }
 
+#if RENDERER_ENABLE_SHADOWS
 float CalculateShadowVisibility(vec4 lightSpacePosition, vec3 normal, vec3 lightDir) {
     if (lighting.directionalLightDirection.w < 0.5) {
         return 1.0;
@@ -132,6 +143,7 @@ float CalculateShadowVisibility(vec4 lightSpacePosition, vec3 normal, vec3 light
     float strength = clamp(lighting.cameraPosition.w, 0.0, 1.0);
     return mix(1.0, visibility, strength);
 }
+#endif
 
 void main() {
     int textureFlags = int(pushConstants.textureFlags);
@@ -181,7 +193,11 @@ void main() {
     vec3 kS = fresnel;
     vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
     float ndotl = max(dot(normal, lightDir), 0.0);
+#if RENDERER_ENABLE_SHADOWS
     float shadowVisibility = CalculateShadowVisibility(fragLightSpacePosition, normal, lightDir);
+#else
+    float shadowVisibility = 1.0;
+#endif
     vec3 directLight = (kD * albedo / PI + specular) * radiance * ndotl * shadowVisibility;
     vec3 ambientFresnel = FresnelSchlickRoughness(max(dot(normal, viewDir), 0.0), f0, roughness);
     vec3 ambientDiffuse = kD * albedo * lighting.ambientColor.rgb * lighting.ambientColor.a;

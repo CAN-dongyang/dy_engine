@@ -1,4 +1,4 @@
-set(EXAMPLE_NAME "07_RenderPath")
+set(EXAMPLE_NAME "07_RendererStress")
 
 add_executable(${EXAMPLE_NAME} main.cpp)
 

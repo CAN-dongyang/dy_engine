@@ -1,6 +1,14 @@
 #include <metal_stdlib>
 #include "StockShaderLayout.inc"
 
+#ifndef RENDERER_ENABLE_SHADOWS
+#error RENDERER_ENABLE_SHADOWS must be defined
+#endif
+
+#ifndef RENDERER_VERTEX_ENTRY
+#error RENDERER_VERTEX_ENTRY must be defined
+#endif
+
 using namespace metal;
 
 struct DrawConstants
@@ -8,18 +16,20 @@ struct DrawConstants
     float4x4 viewProjectionMatrix;
     float4x4 modelMatrix;
     uint textureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     float4 emissiveColor;
     float4 baseColor;
     float4 materialParams;
 };
 
+#if RENDERER_ENABLE_SHADOWS
 struct ShadowMatrix
 {
     float4x4 lightViewProjectionMatrix;
 };
+#endif
 
 struct MeshVertex
 {
@@ -36,27 +46,23 @@ struct RasterData
     float3 worldPosition [[user(locn1)]];
     float3 worldNormal [[user(locn2)]];
     float4 worldTangent [[user(locn3)]];
+#if RENDERER_ENABLE_SHADOWS
     float4 lightSpacePosition [[user(locn4)]];
+#endif
 };
 
-vertex RasterData vertexShader(
+vertex RasterData RENDERER_VERTEX_ENTRY(
     MeshVertex input [[stage_in]],
-    constant DrawConstants& drawConstants [[buffer(RENDERER_BINDING_INLINE_CONSTANTS)]],
+#if RENDERER_ENABLE_SHADOWS
     constant ShadowMatrix& shadowMatrix [[buffer(RENDERER_BINDING_SHADOW_MATRIX)]],
-    device const float4x4* transforms [[buffer(RENDERER_BINDING_TRANSFORM_STORAGE)]],
-    uint instanceId [[instance_id]])
+#endif
+    constant DrawConstants& drawConstants [[buffer(RENDERER_BINDING_INLINE_CONSTANTS)]])
 {
-    float4x4 resolvedModelMatrix = drawConstants.modelMatrix;
-    if (drawConstants.instanceBase != 0u)
-    {
-        resolvedModelMatrix = transforms[drawConstants.instanceBase - 1u + instanceId];
-    }
-
-    const float4 worldPosition = resolvedModelMatrix * float4(input.position, 1.0f);
+    const float4 worldPosition = drawConstants.modelMatrix * float4(input.position, 1.0f);
     const float3x3 normalMatrix = float3x3(
-        resolvedModelMatrix[0].xyz,
-        resolvedModelMatrix[1].xyz,
-        resolvedModelMatrix[2].xyz);
+        drawConstants.modelMatrix[0].xyz,
+        drawConstants.modelMatrix[1].xyz,
+        drawConstants.modelMatrix[2].xyz);
 
     RasterData output;
     output.position = drawConstants.viewProjectionMatrix * worldPosition;
@@ -64,6 +70,8 @@ vertex RasterData vertexShader(
     output.worldPosition = worldPosition.xyz;
     output.worldNormal = normalize(normalMatrix * input.normal);
     output.worldTangent = float4(normalize(normalMatrix * input.tangent.xyz), input.tangent.w);
+#if RENDERER_ENABLE_SHADOWS
     output.lightSpacePosition = shadowMatrix.lightViewProjectionMatrix * worldPosition;
+#endif
     return output;
 }

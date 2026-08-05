@@ -12,9 +12,8 @@ endif()
 add_library(${PROJECT_NAME} STATIC
 	"src/RHI/IDevice.cpp"
 	"src/Graphics/Renderer.cpp"
-	"src/Graphics/RenderPath.cpp"
-	"src/Graphics/GpuScene.cpp"
-	"src/Graphics/ImageFile.cpp"
+	"src/Graphics/Private/DrawData.cpp"
+	"src/Graphics/Private/TextureCache.cpp"
 	"src/Graphics/Mesh.cpp"
 	"src/Platform/Window.cpp"
 )

@@ -7,6 +7,7 @@ set(DY_STOCK_SHADER_HEADERS)
 
 function(dy_embed_stock_shader source stage name symbol)
     set(binary "${DY_STOCK_SHADER_GENERATED_DIR}/${name}.bin")
+    set(shader_defines ${ARGN})
 
     if(USE_D3D12)
         if(NOT DY_DXC)
@@ -23,7 +24,7 @@ function(dy_embed_stock_shader source stage name symbol)
         add_custom_command(
             OUTPUT "${binary}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${DY_STOCK_SHADER_GENERATED_DIR}"
-            COMMAND "${DY_DXC}" -T "${profile}" -E main -I "${DY_STOCK_SHADER_SOURCE_DIR}" -Fo "${binary}" "${source}"
+            COMMAND "${DY_DXC}" -T "${profile}" -E main ${shader_defines} -I "${DY_STOCK_SHADER_SOURCE_DIR}" -Fo "${binary}" "${source}"
             DEPENDS "${source}" "${DY_STOCK_SHADER_LAYOUT}"
             VERBATIM)
     elseif(USE_VULKAN)
@@ -36,7 +37,7 @@ function(dy_embed_stock_shader source stage name symbol)
         add_custom_command(
             OUTPUT "${binary}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${DY_STOCK_SHADER_GENERATED_DIR}"
-            COMMAND "${DY_GLSLC}" "-fshader-stage=${stage}" -I "${DY_STOCK_SHADER_SOURCE_DIR}" "${source}" -o "${binary}"
+            COMMAND "${DY_GLSLC}" "-fshader-stage=${stage}" ${shader_defines} -I "${DY_STOCK_SHADER_SOURCE_DIR}" "${source}" -o "${binary}"
             DEPENDS "${source}" "${DY_STOCK_SHADER_LAYOUT}"
             VERBATIM)
     else()
@@ -64,13 +65,55 @@ if(USE_METAL AND NOT USE_D3D12)
     endif()
 
     set(metal_air_files)
-    foreach(shader IN ITEMS mesh_vs mesh_ps mesh_shadow_vs)
-        set(source "${DY_STOCK_SHADER_SOURCE_DIR}/${shader}.metal")
+    set(source "${DY_STOCK_SHADER_SOURCE_DIR}/mesh_shadow_vs.metal")
+    set(air "${DY_STOCK_SHADER_GENERATED_DIR}/mesh_shadow_vs.air")
+    add_custom_command(
+        OUTPUT "${air}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${DY_STOCK_SHADER_GENERATED_DIR}"
+        COMMAND "${DY_XCRUN}" -sdk macosx metal -I "${DY_STOCK_SHADER_SOURCE_DIR}" -c "${source}" -o "${air}"
+        DEPENDS "${source}" "${DY_STOCK_SHADER_LAYOUT}"
+        VERBATIM)
+    list(APPEND metal_air_files "${air}")
+
+    foreach(enable_shadows IN ITEMS 1 0)
+        if(enable_shadows)
+            set(shader mesh_vs)
+            set(vertex_entry vertexShader)
+        else()
+            set(shader mesh_vs_no_shadows)
+            set(vertex_entry vertexShaderNoShadows)
+        endif()
+        set(source "${DY_STOCK_SHADER_SOURCE_DIR}/mesh_vs.metal")
         set(air "${DY_STOCK_SHADER_GENERATED_DIR}/${shader}.air")
         add_custom_command(
             OUTPUT "${air}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${DY_STOCK_SHADER_GENERATED_DIR}"
-            COMMAND "${DY_XCRUN}" -sdk macosx metal -I "${DY_STOCK_SHADER_SOURCE_DIR}" -c "${source}" -o "${air}"
+            COMMAND "${DY_XCRUN}" -sdk macosx metal -I "${DY_STOCK_SHADER_SOURCE_DIR}"
+                "-DRENDERER_ENABLE_SHADOWS=${enable_shadows}"
+                "-DRENDERER_VERTEX_ENTRY=${vertex_entry}"
+                -c "${source}" -o "${air}"
+            DEPENDS "${source}" "${DY_STOCK_SHADER_LAYOUT}"
+            VERBATIM)
+        list(APPEND metal_air_files "${air}")
+    endforeach()
+
+    foreach(enable_shadows IN ITEMS 1 0)
+        if(enable_shadows)
+            set(shader mesh_ps)
+            set(fragment_entry fragmentShader)
+        else()
+            set(shader mesh_ps_no_shadows)
+            set(fragment_entry fragmentShaderNoShadows)
+        endif()
+        set(source "${DY_STOCK_SHADER_SOURCE_DIR}/mesh_ps.metal")
+        set(air "${DY_STOCK_SHADER_GENERATED_DIR}/${shader}.air")
+        add_custom_command(
+            OUTPUT "${air}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${DY_STOCK_SHADER_GENERATED_DIR}"
+            COMMAND "${DY_XCRUN}" -sdk macosx metal -I "${DY_STOCK_SHADER_SOURCE_DIR}"
+                "-DRENDERER_ENABLE_SHADOWS=${enable_shadows}"
+                "-DRENDERER_FRAGMENT_ENTRY=${fragment_entry}"
+                -c "${source}" -o "${air}"
             DEPENDS "${source}" "${DY_STOCK_SHADER_LAYOUT}"
             VERBATIM)
         list(APPEND metal_air_files "${air}")
@@ -95,8 +138,10 @@ else()
     else()
         set(shader_extension glsl)
     endif()
-    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_vs.${shader_extension}" vert StockVertexShader kStockVertexShader)
-    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_ps.${shader_extension}" frag StockFragmentShader kStockFragmentShader)
+    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_vs.${shader_extension}" vert StockVertexShader kStockVertexShader -DRENDERER_ENABLE_SHADOWS=1)
+    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_vs.${shader_extension}" vert StockVertexShaderNoShadows kStockVertexShaderNoShadows -DRENDERER_ENABLE_SHADOWS=0)
+    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_ps.${shader_extension}" frag StockFragmentShader kStockFragmentShader -DRENDERER_ENABLE_SHADOWS=1)
+    dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_ps.${shader_extension}" frag StockFragmentShaderNoShadows kStockFragmentShaderNoShadows -DRENDERER_ENABLE_SHADOWS=0)
     dy_embed_stock_shader("${DY_STOCK_SHADER_SOURCE_DIR}/mesh_shadow_vs.${shader_extension}" vert StockShadowVertexShader kStockShadowVertexShader)
 endif()
 

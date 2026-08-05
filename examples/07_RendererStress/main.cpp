@@ -1,9 +1,8 @@
-// 07_RenderPath - render-path / SIMD benchmark.
+// 07_RendererStress - renderer stress test.
 //
-// Compares draw-submission strategies under a heavy, multi-model, multi-texture
-// scene, plus an isolated SIMD matrix-multiply micro-benchmark.
+// Stresses draw submission under a heavy, multi-model, multi-texture scene,
+// plus an isolated SIMD matrix-multiply micro-benchmark.
 //
-//   Binding mode (runtime):  --per-draw | --batched
 //   Instance count (runtime): --count=N
 //   SIMD (build flag):        cmake -DDY_ENABLE_SIMD=ON|OFF   (reported at startup)
 //
@@ -24,34 +23,11 @@
 #include "Graphics/Scene.h"
 #include "Math/Math.h"
 #include "Platform/Window.h"
-#include "RHI/IDevice.h"
 
 using namespace dy;
 
 namespace
 {
-	Graphics::RendererBindingMode SelectBindingMode(int argc, char** argv)
-	{
-		for(int i = 1; i < argc; ++i)
-		{
-			const std::string arg = argv[i] != nullptr ? argv[i] : "";
-			if(arg == "--per-draw" || arg == "--binding=per-draw") return Graphics::RendererBindingMode::PerDrawBind;
-			if(arg == "--batched"  || arg == "--binding=batched")  return Graphics::RendererBindingMode::BatchedBind;
-		}
-		return Graphics::RendererBindingMode::PerDrawBind;
-	}
-
-	const char* BindingModeName(Graphics::RendererBindingMode mode)
-	{
-		switch(mode)
-		{
-		case Graphics::RendererBindingMode::PerDrawBind: return "PerDrawBind";
-		case Graphics::RendererBindingMode::BatchedBind: return "BatchedBind";
-		case Graphics::RendererBindingMode::Bindless:    return "Bindless";
-		}
-		return "Unknown";
-	}
-
 	uint32_t ParseCount(int argc, char** argv, uint32_t fallback)
 	{
 		for(int i = 1; i < argc; ++i)
@@ -130,13 +106,9 @@ int main(int argc, char** argv)
 {
 	try
 	{
-		const Graphics::RendererBindingMode bindingMode = SelectBindingMode(argc, argv);
 		const uint32_t targetCount = ParseCount(argc, argv, 2000u);
 
-		Platform::Window window(1280, 720, "RenderPath");
-
-		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle()));
-		if(!device) throw std::runtime_error("Failed to create RHI device");
+		Platform::Window window(1280, 720, "RendererStress");
 
 		// ----- SIMD 마이크로벤치 (렌더링과 무관) -----
 		const double simdMs = RunMatrixMulBenchmarkMs(100000u, 20u);
@@ -216,18 +188,17 @@ int main(int argc, char** argv)
 
 		// ----- 렌더러 -----
 		Graphics::RendererDesc cfg = {};
-		cfg.bindingMode = bindingMode;
 		cfg.clearColor = Math::float4(0.02f, 0.03f, 0.05f, 1.0f);
 
-		Graphics::Renderer renderer;
-		if(!renderer.Initialize(device.get(), cfg)) throw std::runtime_error("Failed to initialize renderer");
+		auto renderer = Graphics::Renderer::Create(window.GetHandle(), cfg);
+		if(!renderer) throw std::runtime_error("Failed to create renderer");
 
 		const float gridExtent = static_cast<float>(side) * spacing;
-		Graphics::CameraDesc camera = {};
-		camera.eye = Math::float3(gridExtent, -gridExtent * 1.2f, gridExtent * 0.7f);
-		camera.aspect = 1280.0f / 720.0f;
-		camera.farPlane = gridExtent * 4.0f + 50.0f;
-		renderer.SetCamera(camera);
+		const Math::float3 cameraTarget(0.0f, 0.0f, 0.0f);
+		Graphics::Camera camera = {};
+		camera.position = Math::float3(gridExtent, -gridExtent * 1.2f, gridExtent * 0.7f);
+		camera.view = Math::LookAtRH(camera.position, cameraTarget, Math::float3(0.0f, 0.0f, 1.0f));
+		camera.projection = Math::PerspectiveRH_ZO(1.0472f, 1280.0f / 720.0f, 0.1f, gridExtent * 4.0f + 50.0f);
 
 		Graphics::DirectionalLight light = {};
 		light.direction = Math::float3(0.5f, 0.6f, 0.6f);
@@ -236,8 +207,7 @@ int main(int argc, char** argv)
 		const DirectionalLightID lightId = scene.CreateDirectionalLight(light);
 
 		// ----- 시작 정보 출력 -----
-		std::cout << "=== RenderPath ===\n"
-		          << "  binding mode : " << BindingModeName(bindingMode) << "\n"
+		std::cout << "=== RendererStress ===\n"
 		          << "  SIMD         : " << SimdState() << "\n"
 		          << "  models loaded: " << loadedModelCount << ", template entities: " << baseCount << "\n"
 		          << "  instances    : " << instanceCount << "\n"
@@ -268,20 +238,16 @@ int main(int argc, char** argv)
 
 			// 그리드 중심 공전 카메라 + 함께 회전하는 라이트.
 			const float a = seconds * 0.3f;
-			camera.eye = Math::float3(
-				camera.target.x + gridExtent * 1.5f * std::cos(a),
-				camera.target.y + gridExtent * 1.5f * std::sin(a),
-				camera.target.z + gridExtent * 0.7f);
-			renderer.SetCamera(camera);
+			camera.position = Math::float3(
+				cameraTarget.x + gridExtent * 1.5f * std::cos(a),
+				cameraTarget.y + gridExtent * 1.5f * std::sin(a),
+				cameraTarget.z + gridExtent * 0.7f);
+			camera.view = Math::LookAtRH(camera.position, cameraTarget, Math::float3(0.0f, 0.0f, 1.0f));
 			Graphics::DirectionalLight rotated = light;
 			rotated.direction = Math::float3(std::cos(a) * 0.6f, std::sin(a) * 0.6f, 0.6f);
-			scene.SetDirectionalLight(ToIndex(lightId), rotated);
+			scene.SetDirectionalLight(lightId, rotated);
 
-			if(device->BeginFrame())
-			{
-				renderer.Render(scene, device.get());
-				device->Present();
-			}
+			renderer->Render(scene, camera);
 
 			// 1초마다 프레임타임/FPS 출력.
 			++framesSinceReport;
@@ -290,14 +256,13 @@ int main(int argc, char** argv)
 			{
 				const double fps = framesSinceReport / sinceReport;
 				const double frameMs = 1000.0 / fps;
-				std::cout << "[" << BindingModeName(bindingMode) << " SIMD=" << SimdState() << "] "
+				std::cout << "[SIMD=" << SimdState() << "] "
 				          << fps << " fps, " << frameMs << " ms/frame\n";
 				framesSinceReport = 0;
 				lastReport = now;
 			}
 		}
 
-		renderer.Shutdown(device.get());
 		return 0;
 	}
 	catch(const std::exception& exception)

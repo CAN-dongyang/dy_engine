@@ -61,7 +61,6 @@ namespace dy::Graphics
 			m_entityRenderFlags.push_back(renderFlags);
 			return entity;
 		}
-		// 라이트는 기본값이 충실한 Desc 구조체로 생성한다(확장-파라미터 오버로드는 제거).
 		[[nodiscard]] DirectionalLightID CreateDirectionalLight(const DirectionalLight& light)
 		{
 			m_directionalLights.push_back(light);
@@ -120,34 +119,22 @@ namespace dy::Graphics
 		{
 			m_entityRenderFlags[ToIndex(entityId)] = renderFlags;
 		}
-		[[nodiscard]] const DirectionalLight& GetDirectionalLight(uint32_t lightIndex) const
+		[[nodiscard]] const DirectionalLight& GetDirectionalLight(DirectionalLightID lightId) const
 		{
-			return m_directionalLights[lightIndex];
+			return m_directionalLights[ToIndex(lightId)];
 		}
-		void SetDirectionalLight(uint32_t lightIndex, const DirectionalLight& light)
+		void SetDirectionalLight(DirectionalLightID lightId, const DirectionalLight& light)
 		{
-			m_directionalLights[lightIndex] = light;
+			m_directionalLights[ToIndex(lightId)] = light;
 		}
-		[[nodiscard]] const PointLight& GetPointLight(uint32_t lightIndex) const
+		[[nodiscard]] const PointLight& GetPointLight(PointLightID lightId) const
 		{
-			return m_pointLights[lightIndex];
+			return m_pointLights[ToIndex(lightId)];
 		}
-		void SetPointLight(uint32_t lightIndex, const PointLight& light)
+		void SetPointLight(PointLightID lightId, const PointLight& light)
 		{
-			m_pointLights[lightIndex] = light;
+			m_pointLights[ToIndex(lightId)] = light;
 		}
-
-		// ---- 연속 메모리 뷰 (DOD/SIMD 일괄 처리용) ----------------------------------
-		[[nodiscard]] const std::vector<MeshID>& EntityMeshes() const { return m_entityMeshes; }
-		[[nodiscard]] const std::vector<MaterialID>& EntityMaterials() const { return m_entityMaterials; }
-		[[nodiscard]] const std::vector<Transform>& Transforms() const { return m_entityTransforms; }
-		[[nodiscard]] std::vector<Transform>& TransformsMutable() { return m_entityTransforms; }
-		[[nodiscard]] const std::vector<RenderFlags>& EntityRenderFlags() const { return m_entityRenderFlags; }
-		[[nodiscard]] const std::vector<MeshData>& Meshes() const { return m_meshes; }
-		[[nodiscard]] const std::vector<MaterialDesc>& Materials() const { return m_materials; }
-		[[nodiscard]] const std::vector<TextureAsset>& Textures() const { return m_textures; }
-		[[nodiscard]] const std::vector<DirectionalLight>& DirectionalLights() const { return m_directionalLights; }
-		[[nodiscard]] const std::vector<PointLight>& PointLights() const { return m_pointLights; }
 
 	private:
 		std::vector<TextureAsset> m_textures;

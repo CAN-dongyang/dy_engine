@@ -3,7 +3,6 @@
 #include <stdexcept>
 
 #include "Platform/Window.h"
-#include "RHI/IDevice.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 #include "Graphics/Mesh.h"
@@ -15,12 +14,12 @@ int main()
 	try
 	{
 		Platform::Window window(1280, 720, "HelloRenderer");
-		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle()));
-		if(!device) return -1;
-
-		Graphics::Renderer renderer;
 		Graphics::RendererDesc rendererConfig = {};
-		if(!renderer.Initialize(device.get(), rendererConfig)) return -1;
+		auto renderer = Graphics::Renderer::Create(window.GetHandle(), rendererConfig);
+		if(!renderer) return -1;
+
+		Graphics::Camera camera = {};
+		camera.position = Math::float3(0.0f, 0.0f, 2.2f);
 
 		Graphics::Scene scene;
 		[[maybe_unused]] const DirectionalLightID lightId =
@@ -43,14 +42,9 @@ int main()
 		while(window.IsRunning())
 		{
 			window.PollEvents();
-			if(device->BeginFrame())
-			{
-				renderer.Render(scene, device.get());
-				device->Present();
-			}
+			renderer->Render(scene, camera);
 		}
 
-		renderer.Shutdown(device.get());
 		return 0;
 	}
 	catch(const std::exception& exception)

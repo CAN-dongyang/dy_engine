@@ -2,6 +2,10 @@
 
 #include "StockShaderLayout.inc"
 
+#ifndef RENDERER_ENABLE_SHADOWS
+#error RENDERER_ENABLE_SHADOWS must be defined
+#endif
+
 #define REGISTER_TOKEN_IMPL(prefix, index) prefix##index
 #define REGISTER_TOKEN(prefix, index) REGISTER_TOKEN_IMPL(prefix, index)
 #define BUFFER_REGISTER(index) REGISTER_TOKEN(b, index)
@@ -15,9 +19,9 @@ cbuffer DrawConstants : register(
     column_major float4x4 viewProjectionMatrix;
     column_major float4x4 modelMatrix;
     uint drawTextureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     float4 emissiveColor;
     float4 baseColor;
     float4 materialParams;
@@ -53,15 +57,19 @@ Texture2D OcclusionTexture : register(
 Texture2D EmissiveTexture : register(
     TEXTURE_REGISTER(RENDERER_BINDING_EMISSIVE_TEXTURE),
     REGISTER_SPACE(RENDERER_DESCRIPTOR_SET));
+#if RENDERER_ENABLE_SHADOWS
 Texture2D ShadowMap : register(
     TEXTURE_REGISTER(RENDERER_BINDING_SHADOW_TEXTURE),
     REGISTER_SPACE(RENDERER_DESCRIPTOR_SET));
+#endif
 SamplerState LinearSampler : register(
     REGISTER_TOKEN(s, RENDERER_BINDING_MATERIAL_SAMPLER),
     REGISTER_SPACE(RENDERER_DESCRIPTOR_SET));
+#if RENDERER_ENABLE_SHADOWS
 SamplerState ShadowSampler : register(
     REGISTER_TOKEN(s, RENDERER_BINDING_SHADOW_SAMPLER),
     REGISTER_SPACE(RENDERER_DESCRIPTOR_SET));
+#endif
 
 struct PSInput
 {
@@ -70,7 +78,9 @@ struct PSInput
     float3 worldPosition      : TEXCOORD1;
     float3 worldNormal        : TEXCOORD2;
     float4 worldTangent       : TEXCOORD3;
+#if RENDERER_ENABLE_SHADOWS
     float4 lightSpacePosition : TEXCOORD4;
+#endif
 };
 
 static const float PI = 3.14159265359;
@@ -135,6 +145,7 @@ float3 GetNormal(PSInput input, uint textureFlags)
     return normalize(mul(tangentNormal, tbn));
 }
 
+#if RENDERER_ENABLE_SHADOWS
 float CalculateShadowVisibility(float4 lightSpacePosition, float3 normal, float3 lightDir)
 {
     if (directionalLightDirection.w < 0.5)
@@ -176,6 +187,7 @@ float CalculateShadowVisibility(float4 lightSpacePosition, float3 normal, float3
     float strength = saturate(cameraPosition.w);
     return lerp(1.0, visibility, strength);
 }
+#endif
 
 float4 main(PSInput input) : SV_TARGET
 {
@@ -235,7 +247,11 @@ float4 main(PSInput input) : SV_TARGET
     float3 kS = fresnel;
     float3 kD = (float3(1.0, 1.0, 1.0) - kS) * (1.0 - metallic);
     float ndotl = max(dot(normal, lightDir), 0.0);
+#if RENDERER_ENABLE_SHADOWS
     float shadowVisibility = CalculateShadowVisibility(input.lightSpacePosition, normal, lightDir);
+#else
+    float shadowVisibility = 1.0;
+#endif
     float3 directLight = (kD * albedo / PI + specular) * radiance * ndotl * shadowVisibility;
     float3 ambientFresnel = FresnelSchlickRoughness(max(dot(normal, viewDir), 0.0), f0, roughness);
     float3 ambientDiffuse = kD * albedo * ambientColor.rgb * ambientColor.a;

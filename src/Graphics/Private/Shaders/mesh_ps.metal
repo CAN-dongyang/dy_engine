@@ -1,6 +1,14 @@
 #include <metal_stdlib>
 #include "StockShaderLayout.inc"
 
+#ifndef RENDERER_ENABLE_SHADOWS
+#error RENDERER_ENABLE_SHADOWS must be defined
+#endif
+
+#ifndef RENDERER_FRAGMENT_ENTRY
+#error RENDERER_FRAGMENT_ENTRY must be defined
+#endif
+
 using namespace metal;
 
 struct DrawConstants
@@ -8,9 +16,9 @@ struct DrawConstants
     float4x4 viewProjectionMatrix;
     float4x4 modelMatrix;
     uint textureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     float4 emissiveColor;
     float4 baseColor;
     float4 materialParams;
@@ -36,7 +44,9 @@ struct RasterData
     float3 worldPosition [[user(locn1)]];
     float3 worldNormal [[user(locn2)]];
     float4 worldTangent [[user(locn3)]];
+#if RENDERER_ENABLE_SHADOWS
     float4 lightSpacePosition [[user(locn4)]];
+#endif
 };
 
 constant uint kTextureFlagBaseColor =
@@ -49,8 +59,10 @@ constant uint kTextureFlagOcclusion =
     uint(RENDERER_TEXTURE_FLAG_OCCLUSION);
 constant uint kTextureFlagEmissive =
     uint(RENDERER_TEXTURE_FLAG_EMISSIVE);
+#if RENDERER_ENABLE_SHADOWS
 constant uint kTextureFlagReceiveShadow =
     uint(RENDERER_TEXTURE_FLAG_RECEIVE_SHADOW);
+#endif
 constant float kPi = 3.14159265359f;
 
 inline float DistributionGGX(float3 normal, float3 halfway, float roughness)
@@ -124,6 +136,7 @@ inline float3 ResolveNormal(
     return normalize(tangentBasis * tangentNormal);
 }
 
+#if RENDERER_ENABLE_SHADOWS
 inline float CalculateShadowVisibility(
     float4 lightSpacePosition,
     float3 normal,
@@ -181,19 +194,24 @@ inline float CalculateShadowVisibility(
         visibility,
         saturate(lighting.cameraPosition.w));
 }
+#endif
 
 inline float4 RunFragmentShader(
     RasterData input,
     constant DrawConstants& drawConstants,
     constant RendererLighting& lighting,
     texture2d<float> baseColorTexture,
+#if RENDERER_ENABLE_SHADOWS
     depth2d<float> shadowMap,
+#endif
     texture2d<float> metallicRoughnessTexture,
     texture2d<float> normalTexture,
     texture2d<float> occlusionTexture,
     texture2d<float> emissiveTexture,
-    sampler materialSampler,
-    sampler shadowSampler)
+#if RENDERER_ENABLE_SHADOWS
+    sampler shadowSampler,
+#endif
+    sampler materialSampler)
 {
     const uint textureFlags = drawConstants.textureFlags;
     float3 albedo = drawConstants.baseColor.rgb;
@@ -293,6 +311,7 @@ inline float4 RunFragmentShader(
         (float3(1.0f) - kS) * (1.0f - metallic);
     const float ndotl =
         max(dot(normal, lightDirection), 0.0f);
+#if RENDERER_ENABLE_SHADOWS
     const float shadowVisibility = CalculateShadowVisibility(
         input.lightSpacePosition,
         normal,
@@ -301,6 +320,9 @@ inline float4 RunFragmentShader(
         lighting,
         shadowMap,
         shadowSampler);
+#else
+    const float shadowVisibility = 1.0f;
+#endif
     const float3 directLight =
         (kD * albedo / kPi + specular) *
         radiance *
@@ -337,29 +359,37 @@ inline float4 RunFragmentShader(
     return float4(color, drawConstants.baseColor.a);
 }
 
-fragment float4 fragmentShader(
+fragment float4 RENDERER_FRAGMENT_ENTRY(
     RasterData input [[stage_in]],
     constant DrawConstants& drawConstants [[buffer(RENDERER_BINDING_INLINE_CONSTANTS)]],
     constant RendererLighting& lighting [[buffer(RENDERER_BINDING_LIGHTING_CONSTANTS)]],
     texture2d<float> baseColorTexture [[texture(RENDERER_BINDING_BASE_COLOR_TEXTURE)]],
+#if RENDERER_ENABLE_SHADOWS
     depth2d<float> shadowMap [[texture(RENDERER_BINDING_SHADOW_TEXTURE)]],
+#endif
     texture2d<float> metallicRoughnessTexture [[texture(RENDERER_BINDING_METALLIC_ROUGHNESS_TEXTURE)]],
     texture2d<float> normalTexture [[texture(RENDERER_BINDING_NORMAL_TEXTURE)]],
     texture2d<float> occlusionTexture [[texture(RENDERER_BINDING_OCCLUSION_TEXTURE)]],
     texture2d<float> emissiveTexture [[texture(RENDERER_BINDING_EMISSIVE_TEXTURE)]],
-    sampler materialSampler [[sampler(RENDERER_BINDING_MATERIAL_SAMPLER)]],
-    sampler shadowSampler [[sampler(RENDERER_BINDING_SHADOW_SAMPLER)]])
+#if RENDERER_ENABLE_SHADOWS
+    sampler shadowSampler [[sampler(RENDERER_BINDING_SHADOW_SAMPLER)]],
+#endif
+    sampler materialSampler [[sampler(RENDERER_BINDING_MATERIAL_SAMPLER)]])
 {
     return RunFragmentShader(
         input,
         drawConstants,
         lighting,
         baseColorTexture,
+#if RENDERER_ENABLE_SHADOWS
         shadowMap,
+#endif
         metallicRoughnessTexture,
         normalTexture,
         occlusionTexture,
         emissiveTexture,
-        materialSampler,
-        shadowSampler);
+#if RENDERER_ENABLE_SHADOWS
+        shadowSampler,
+#endif
+        materialSampler);
 }

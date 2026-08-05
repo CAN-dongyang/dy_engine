@@ -47,9 +47,9 @@ namespace dy::Graphics::Private::RendererShaderLayout
 		Math::float4x4 viewProjectionMatrix;
 		Math::float4x4 modelMatrix;
 		uint32_t textureFlags = 0;
-		uint32_t instanceBase = 0;
 		uint32_t padding0 = 0;
 		uint32_t padding1 = 0;
+		uint32_t padding2 = 0;
 		Math::float4 emissiveColor;
 		Math::float4 baseColor;
 		Math::float4 materialParams;

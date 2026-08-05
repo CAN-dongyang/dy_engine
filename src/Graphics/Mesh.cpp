@@ -765,21 +765,6 @@ namespace dy::Graphics
 		}
 	}
 
-	bool ModelLoader::Load(const std::string& path, ModelData& outModel, const ModelLoadOptions& options)
-	{
-		return LoadModel(path, outModel, options);
-	}
-
-	bool ModelLoader::LoadMesh(const std::string& path, MeshData& outMesh, ModelMaterialInfo* outMaterial, const ModelLoadOptions& options)
-	{
-		return Graphics::LoadMesh(path, outMesh, outMaterial, options);
-	}
-
-	bool ModelLoader::LoadMesh(const std::string& path, MeshData& outMesh, std::string* outBaseColorTexturePath, const ModelLoadOptions& options)
-	{
-		return Graphics::LoadMesh(path, outMesh, outBaseColorTexturePath, options);
-	}
-
 	bool LoadModel(const std::string& path, ModelData& outModel, const ModelLoadOptions& options)
 	{
 		const std::string extension = std::filesystem::path(path).extension().string();

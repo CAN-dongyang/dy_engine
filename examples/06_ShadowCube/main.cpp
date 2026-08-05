@@ -6,7 +6,6 @@
 #include <stdexcept>
 
 #include "Platform/Window.h"
-#include "RHI/IDevice.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 #include "Graphics/Mesh.h"
@@ -19,19 +18,16 @@ int main()
 	try
 	{
 		Platform::Window window(1280, 720, "ShadowCube");
-		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle()));
-		if(!device) return -1;
-
-		Graphics::Renderer renderer;
 		Graphics::RendererDesc cfg = {};
 		cfg.enableShadows = true;
-		if(!renderer.Initialize(device.get(), cfg)) return -1;
+		auto renderer = Graphics::Renderer::Create(window.GetHandle(), cfg);
+		if(!renderer) return -1;
 
-		Graphics::CameraDesc camera = {};
-		camera.eye = Math::float3(5.0f, 5.0f, 4.0f);
-		camera.target = Math::float3(0.0f, 0.0f, 0.5f);
-		camera.aspect = 1280.0f / 720.0f;
-		renderer.SetCamera(camera);
+		const Math::float3 cameraTarget(0.0f, 0.0f, 0.5f);
+		Graphics::Camera camera = {};
+		camera.position = Math::float3(5.0f, 5.0f, 4.0f);
+		camera.view = Math::LookAtRH(camera.position, cameraTarget, Math::float3(0.0f, 0.0f, 1.0f));
+		camera.projection = Math::PerspectiveRH_ZO(1.0472f, 1280.0f / 720.0f, 0.1f, 100.0f);
 
 		Graphics::Scene scene;
 		const MeshID cube = scene.CreateMesh(Graphics::CreateCubeMesh(1.0f));
@@ -64,17 +60,12 @@ int main()
 			const float a = t * 0.4f;
 
 			// 타깃 중심 공전 카메라.
-			camera.eye = Math::float3(camera.target.x + 7.0f * std::cos(a), camera.target.y + 7.0f * std::sin(a), camera.target.z + 3.5f);
-			renderer.SetCamera(camera);
+			camera.position = Math::float3(cameraTarget.x + 7.0f * std::cos(a), cameraTarget.y + 7.0f * std::sin(a), cameraTarget.z + 3.5f);
+			camera.view = Math::LookAtRH(camera.position, cameraTarget, Math::float3(0.0f, 0.0f, 1.0f));
 
-			if(device->BeginFrame())
-			{
-				renderer.Render(scene, device.get());
-				device->Present();
-			}
+			renderer->Render(scene, camera);
 		}
 
-		renderer.Shutdown(device.get());
 		return 0;
 	}
 	catch(const std::exception& exception)

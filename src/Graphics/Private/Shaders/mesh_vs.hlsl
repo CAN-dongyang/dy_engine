@@ -1,5 +1,9 @@
 #include "StockShaderLayout.inc"
 
+#ifndef RENDERER_ENABLE_SHADOWS
+#error RENDERER_ENABLE_SHADOWS must be defined
+#endif
+
 #define REGISTER_TOKEN_IMPL(prefix, index) prefix##index
 #define REGISTER_TOKEN(prefix, index) REGISTER_TOKEN_IMPL(prefix, index)
 
@@ -10,24 +14,22 @@ cbuffer DrawConstants : register(
     column_major float4x4 viewProjectionMatrix;
     column_major float4x4 modelMatrix;
     uint textureFlags;
-    uint instanceBase;
     uint padding0;
     uint padding1;
+    uint padding2;
     float4 emissiveColor;
     float4 baseColor;
     float4 materialParams;
 };
 
+#if RENDERER_ENABLE_SHADOWS
 cbuffer ShadowMatrix : register(
     REGISTER_TOKEN(b, RENDERER_BINDING_SHADOW_MATRIX),
     REGISTER_TOKEN(space, RENDERER_DESCRIPTOR_SET))
 {
     column_major float4x4 lightViewProjectionMatrix;
 };
-
-StructuredBuffer<float4x4> InstanceTransforms : register(
-    REGISTER_TOKEN(t, RENDERER_BINDING_TRANSFORM_STORAGE),
-    REGISTER_TOKEN(space, RENDERER_DESCRIPTOR_SET));
+#endif
 
 struct VSInput
 {
@@ -44,19 +46,15 @@ struct VSOutput
     float3 worldPosition : TEXCOORD1;
     float3 worldNormal : TEXCOORD2;
     float4 worldTangent : TEXCOORD3;
+#if RENDERER_ENABLE_SHADOWS
     float4 lightSpacePosition : TEXCOORD4;
+#endif
 };
 
-VSOutput main(VSInput input, uint instanceId : SV_InstanceID)
+VSOutput main(VSInput input)
 {
-    float4x4 resolvedModelMatrix = modelMatrix;
-    if (instanceBase != 0u)
-    {
-        resolvedModelMatrix = InstanceTransforms[instanceBase - 1u + instanceId];
-    }
-
-    const float4 worldPosition = mul(resolvedModelMatrix, float4(input.position, 1.0));
-    const float3x3 normalMatrix = (float3x3)resolvedModelMatrix;
+    const float4 worldPosition = mul(modelMatrix, float4(input.position, 1.0));
+    const float3x3 normalMatrix = (float3x3)modelMatrix;
 
     VSOutput output;
     output.position = mul(viewProjectionMatrix, worldPosition);
@@ -64,6 +62,8 @@ VSOutput main(VSInput input, uint instanceId : SV_InstanceID)
     output.worldPosition = worldPosition.xyz;
     output.worldNormal = normalize(mul(normalMatrix, input.normal));
     output.worldTangent = float4(normalize(mul(normalMatrix, input.tangent.xyz)), input.tangent.w);
+#if RENDERER_ENABLE_SHADOWS
     output.lightSpacePosition = mul(lightViewProjectionMatrix, worldPosition);
+#endif
     return output;
 }
