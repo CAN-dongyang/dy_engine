@@ -3,6 +3,7 @@
 #include "VulkanDevice.h"
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace dy::Backends
@@ -36,7 +37,10 @@ public:
 	void ClearDepth(dy::RHI::ITexture* depthStencil, float depth) override;
 	void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) override;
 	void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
-	void Close() override { m_isClosed = true; }
+	void BeginDebugEvent(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
+	void EndDebugEvent() override;
+	void InsertDebugMarker(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
+	void Close() override;
 
 	void Begin();
 	void End();
@@ -84,6 +88,22 @@ private:
 		std::array<uint8_t, kMaxPushConstantBytes> pushConstants = {};
 	};
 
+	enum class DebugEventType
+	{
+		Begin,
+		End,
+		Marker
+	};
+
+	struct DebugEvent
+	{
+		DebugEventType type = DebugEventType::Marker;
+		uint32_t drawIndex = 0;
+		bool depthOnlyPass = false;
+		std::string name;
+		dy::RHI::DebugLabelColor color = {};
+	};
+
 	friend struct VulkanDevice::Impl;
 	std::array<float, 4> m_clearColor = { 0.4f, 0.7f, 1.0f, 1.0f };
 	float m_clearDepth = 1.0f;
@@ -102,6 +122,8 @@ private:
 	dy::RHI::Viewport m_pendingViewport = {};
 	dy::RHI::Rect m_pendingScissor = {};
 	std::vector<DrawCall> m_drawCalls;
+	std::vector<DebugEvent> m_debugEvents;
+	uint32_t m_debugEventDepth = 0;
 	bool m_isClosed = false;
 };
 

@@ -73,6 +73,15 @@ function(dy_setup_example target)
         target_link_libraries(${target} PRIVATE Backend_Null)
     endif()
     target_compile_definitions(${target} PRIVATE DY_SHADER_DIR="./Shaders")
+
+    if(TARGET WinPixEventRuntime)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:WinPixEventRuntime>
+                "$<TARGET_FILE_DIR:${target}>"
+            VERBATIM)
+    endif()
+
     set_property(TARGET ${target} PROPERTY FOLDER ${target})
     set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${target}>")
     dy_example_shaders(${target})

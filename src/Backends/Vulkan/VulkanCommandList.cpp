@@ -1,6 +1,7 @@
 #include "VulkanCommandList.h"
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace dy::Backends
 {
@@ -21,6 +22,8 @@ void VulkanCommandList::Begin()
 	m_hasPendingViewport = false;
 	m_hasPendingScissor = false;
 	m_drawCalls.clear();
+	m_debugEvents.clear();
+	m_debugEventDepth = 0;
 	m_isClosed = false;
 }
 
@@ -166,6 +169,35 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 		memcpy(drawCall.pushConstants.data(), m_pendingPushConstants.data(), m_pendingPushConstantSize);
 	}
 	m_drawCalls.push_back(drawCall);
+}
+
+void VulkanCommandList::BeginDebugEvent(const char* name, const dy::RHI::DebugLabelColor& color)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan debug event name must not be empty.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::Begin, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name, color });
+	++m_debugEventDepth;
+}
+
+void VulkanCommandList::EndDebugEvent()
+{
+	if (m_debugEventDepth == 0) throw std::logic_error("Vulkan debug event end has no matching begin.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::End, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, {}, {} });
+	--m_debugEventDepth;
+}
+
+void VulkanCommandList::InsertDebugMarker(const char* name, const dy::RHI::DebugLabelColor& color)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan debug marker name must not be empty.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::Marker, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name, color });
+}
+
+void VulkanCommandList::Close()
+{
+	if (m_debugEventDepth != 0) throw std::logic_error("Vulkan command list closed with an unbalanced debug event.");
+	m_isClosed = true;
 }
 
 void VulkanCommandList::End()

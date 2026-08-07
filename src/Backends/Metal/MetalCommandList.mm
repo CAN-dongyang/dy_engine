@@ -51,6 +51,7 @@ namespace dy::Backends
         uint32_t                     inlineConstantSize = 0;
         uint32_t                     renderWidth = 1;
         uint32_t                     renderHeight = 1;
+        uint32_t                     debugEventDepth = 0;
     };
 
     MetalCommandList::MetalCommandList(void* commandQueue)
@@ -75,6 +76,7 @@ namespace dy::Backends
         m_impl->inlineConstantSize = 0;
         m_impl->renderWidth = 1;
         m_impl->renderHeight = 1;
+        m_impl->debugEventDepth = 0;
     }
 
     void MetalCommandList::SetRenderTargets(uint32_t numRenderTargets, RHI::ITexture** renderTargets, RHI::ITexture* depthStencil)
@@ -320,6 +322,43 @@ namespace dy::Backends
                             vertexCount:indexCount
                           instanceCount:instanceCount
                            baseInstance:firstInstance];
+    }
+
+    void MetalCommandList::BeginDebugEvent(const char* name, const RHI::DebugLabelColor& color)
+    {
+        (void)color;
+        if(m_impl->commandBuffer == nil || name == nullptr || name[0] == '\0')
+            return;
+
+        NSString* label = [NSString stringWithUTF8String:name];
+        if(label == nil)
+            return;
+
+        [m_impl->commandBuffer pushDebugGroup:label];
+        ++m_impl->debugEventDepth;
+    }
+
+    void MetalCommandList::EndDebugEvent()
+    {
+        if(m_impl->commandBuffer == nil || m_impl->debugEventDepth == 0)
+            return;
+
+        [m_impl->commandBuffer popDebugGroup];
+        --m_impl->debugEventDepth;
+    }
+
+    void MetalCommandList::InsertDebugMarker(const char* name, const RHI::DebugLabelColor& color)
+    {
+        (void)color;
+        if(name == nullptr || name[0] == '\0')
+            return;
+
+        NSString* label = [NSString stringWithUTF8String:name];
+        if(label == nil)
+            return;
+
+        EnsureRenderEncoder();
+        [m_impl->encoder insertDebugSignpost:label];
     }
 
     void MetalCommandList::Close()

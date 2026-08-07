@@ -78,6 +78,32 @@ if(DY_ENABLE_TRACY)
     target_compile_definitions(Engine_Options INTERFACE DY_TRACY_ENABLED=1)
 endif()
 
+if(USE_D3D12 AND WIN32)
+    # PIX event helpers emit D3D12 command-list annotations understood by PIX and RenderDoc.
+    set(DY_WINPIX_VERSION "1.0.240308001")
+    FetchContent_Declare(
+        winpixeventruntime
+        URL "https://www.nuget.org/api/v2/package/WinPixEventRuntime/${DY_WINPIX_VERSION}"
+        URL_HASH "SHA256=726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4"
+    )
+    FetchContent_MakeAvailable(winpixeventruntime)
+
+    if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+        set(DY_WINPIX_ARCH "ARM64")
+    else()
+        set(DY_WINPIX_ARCH "x64")
+    endif()
+
+    add_library(WinPixEventRuntime SHARED IMPORTED GLOBAL)
+    set_target_properties(WinPixEventRuntime PROPERTIES
+        IMPORTED_LOCATION "${winpixeventruntime_SOURCE_DIR}/bin/${DY_WINPIX_ARCH}/WinPixEventRuntime.dll"
+        IMPORTED_IMPLIB "${winpixeventruntime_SOURCE_DIR}/bin/${DY_WINPIX_ARCH}/WinPixEventRuntime.lib"
+        INTERFACE_INCLUDE_DIRECTORIES "${winpixeventruntime_SOURCE_DIR}/Include"
+    )
+    add_library(WinPixEventRuntime::WinPixEventRuntime ALIAS WinPixEventRuntime)
+    target_link_libraries(${PROJECT_NAME} PRIVATE WinPixEventRuntime::WinPixEventRuntime)
+endif()
+
 FetchContent_Declare(
 	glfw
 	GIT_REPOSITORY "https://github.com/glfw/glfw.git"

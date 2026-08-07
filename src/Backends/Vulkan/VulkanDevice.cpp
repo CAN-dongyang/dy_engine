@@ -579,6 +579,10 @@ private:
 	void RecordCommandBuffer(const VulkanCommandList& commandList);
 	void RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
 	void RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
+	void RecordDebugEventsAt(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t drawIndex, bool depthOnlyPass, size_t& eventIndex);
+	void BeginDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const;
+	void EndDebugLabel(VkCommandBuffer commandBuffer) const;
+	void InsertDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const;
 	bool ResolveMainPassTarget(const VulkanCommandList& commandList, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool GetOrCreateOffscreenFramebuffer(dy::RHI::ITexture* colorTarget, dy::RHI::ITexture* depthTarget, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool CreateOffscreenRenderPass(VkFormat colorFormat, VkFormat depthFormat, VkImageLayout colorFinalLayout, VkRenderPass& renderPass);
@@ -594,6 +598,9 @@ private:
 	VulkanContext m_context;
 	VulkanSwapchain m_swapchain;
 	VkRenderPass m_mainRenderPass = VK_NULL_HANDLE;
+	PFN_vkCmdBeginDebugUtilsLabelEXT m_vkCmdBeginDebugUtilsLabel = nullptr;
+	PFN_vkCmdEndDebugUtilsLabelEXT m_vkCmdEndDebugUtilsLabel = nullptr;
+	PFN_vkCmdInsertDebugUtilsLabelEXT m_vkCmdInsertDebugUtilsLabel = nullptr;
 
 	void* m_windowHandle = nullptr;
 
@@ -1035,6 +1042,27 @@ bool VulkanDevice::Impl::CreateInstance() {
 	if (extensions != nullptr) {
 		enabledExtensions.assign(extensions, extensions + extensionCount);
 	}
+
+	uint32_t availableExtensionCount = 0;
+	vkEnumerateInstanceExtensionProperties(nullptr, &availableExtensionCount, nullptr);
+	std::vector<VkExtensionProperties> availableExtensions(availableExtensionCount);
+	if (availableExtensionCount > 0) {
+		vkEnumerateInstanceExtensionProperties(nullptr, &availableExtensionCount, availableExtensions.data());
+	}
+	const bool hasDebugUtils = std::any_of(
+		availableExtensions.begin(),
+		availableExtensions.end(),
+		[](const VkExtensionProperties& extension) {
+			return std::strcmp(extension.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
+		});
+	const bool debugUtilsAlreadyEnabled = std::any_of(
+		enabledExtensions.begin(),
+		enabledExtensions.end(),
+		[](const char* extension) {
+			return std::strcmp(extension, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
+		});
+	if (hasDebugUtils && !debugUtilsAlreadyEnabled) enabledExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
 	std::vector<const char*> enabledLayers;
 	if (IsValidationEnabled()) enabledLayers.push_back(kValidationLayerName);
 
@@ -1058,6 +1086,15 @@ bool VulkanDevice::Impl::CreateInstance() {
 	if (result != VK_SUCCESS) {
 		SDL_Log("Failed to create Vulkan instance: %s (%d)", VkResultToString(result), static_cast<int>(result));
 		return false;
+	}
+
+	if (hasDebugUtils) {
+		m_vkCmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+			vkGetInstanceProcAddr(m_context.instance, "vkCmdBeginDebugUtilsLabelEXT"));
+		m_vkCmdEndDebugUtilsLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+			vkGetInstanceProcAddr(m_context.instance, "vkCmdEndDebugUtilsLabelEXT"));
+		m_vkCmdInsertDebugUtilsLabel = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(
+			vkGetInstanceProcAddr(m_context.instance, "vkCmdInsertDebugUtilsLabelEXT"));
 	}
 
 	return true;
@@ -1138,6 +1175,59 @@ bool VulkanDevice::Impl::CreateLogicalDevice() {
 	return true;
 }
 
+void VulkanDevice::Impl::BeginDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const {
+	if (m_vkCmdBeginDebugUtilsLabel == nullptr || name == nullptr || name[0] == '\0') return;
+	VkDebugUtilsLabelEXT label{};
+	label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+	label.pLabelName = name;
+	label.color[0] = color.r;
+	label.color[1] = color.g;
+	label.color[2] = color.b;
+	label.color[3] = color.a;
+	m_vkCmdBeginDebugUtilsLabel(commandBuffer, &label);
+}
+
+void VulkanDevice::Impl::EndDebugLabel(VkCommandBuffer commandBuffer) const {
+	if (m_vkCmdEndDebugUtilsLabel != nullptr) m_vkCmdEndDebugUtilsLabel(commandBuffer);
+}
+
+void VulkanDevice::Impl::InsertDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const {
+	if (m_vkCmdInsertDebugUtilsLabel == nullptr || name == nullptr || name[0] == '\0') return;
+	VkDebugUtilsLabelEXT label{};
+	label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+	label.pLabelName = name;
+	label.color[0] = color.r;
+	label.color[1] = color.g;
+	label.color[2] = color.b;
+	label.color[3] = color.a;
+	m_vkCmdInsertDebugUtilsLabel(commandBuffer, &label);
+}
+
+void VulkanDevice::Impl::RecordDebugEventsAt(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	uint32_t drawIndex,
+	bool depthOnlyPass,
+	size_t& eventIndex) {
+	while (eventIndex < commandList.m_debugEvents.size() &&
+		commandList.m_debugEvents[eventIndex].drawIndex == drawIndex) {
+		const VulkanCommandList::DebugEvent& event = commandList.m_debugEvents[eventIndex++];
+		if (event.depthOnlyPass != depthOnlyPass) continue;
+
+		switch (event.type) {
+		case VulkanCommandList::DebugEventType::Begin:
+			BeginDebugLabel(commandBuffer, event.name.c_str(), event.color);
+			break;
+		case VulkanCommandList::DebugEventType::End:
+			EndDebugLabel(commandBuffer);
+			break;
+		case VulkanCommandList::DebugEventType::Marker:
+			InsertDebugLabel(commandBuffer, event.name.c_str(), event.color);
+			break;
+		}
+	}
+}
+
 void VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandList) {
 	VkCommandBuffer commandBuffer = m_commandBuffers[m_currentFrameIndex];
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -1186,7 +1276,9 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 	vkCmdSetScissor(commandBuffer, 0, 1, &newShadowScissor);
 
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
+	size_t debugEventIndex = 0;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
+		RecordDebugEventsAt(commandBuffer, commandList, drawIndex, true, debugEventIndex);
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 		if (pipelineState == nullptr || !pipelineState->IsShadowPassEnabled()) continue;
@@ -1248,6 +1340,7 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 			vkCmdDraw(commandBuffer, drawCall.vertexCount, drawCall.instanceCount, 0, drawCall.startInstance);
 		}
 	}
+	RecordDebugEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), true, debugEventIndex);
 
 	vkCmdEndRenderPass(commandBuffer);
 	return;
@@ -1281,7 +1374,9 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	VkPipelineLayout currentPipelineLayout = VK_NULL_HANDLE;
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 	VkDescriptorSet currentBindlessDescriptorSet = VK_NULL_HANDLE;
+	size_t debugEventIndex = 0;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
+		RecordDebugEventsAt(commandBuffer, commandList, drawIndex, false, debugEventIndex);
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 		if (pipelineState == nullptr) continue;
@@ -1382,6 +1477,7 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 			vkCmdDraw(commandBuffer, drawVertexCount, drawCall.instanceCount, 0, drawCall.startInstance);
 		}
 	}
+	RecordDebugEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), false, debugEventIndex);
 
 	vkCmdEndRenderPass(commandBuffer);
 }

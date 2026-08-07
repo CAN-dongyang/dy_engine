@@ -21,6 +21,9 @@ namespace Layout = dy::Graphics::RendererShaderLayout;
 
 namespace
 {
+	constexpr RHI::DebugLabelColor kShadowDebugColor = { 0.45f, 0.35f, 0.90f, 1.0f };
+	constexpr RHI::DebugLabelColor kMainForwardDebugColor = { 0.15f, 0.65f, 0.95f, 1.0f };
+
 	struct RendererVertex
 	{
 		float px = 0.0f, py = 0.0f, pz = 0.0f;
@@ -443,6 +446,8 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
+		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -497,6 +502,8 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
+		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -544,6 +551,7 @@ namespace
 			commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
 		}
 
+		debugEvent.End();
 		SubmitMainPass(device, commandList);
 	}
 
@@ -597,6 +605,8 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
+		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -654,6 +664,8 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
+		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
 		RHI::GeometryBinding geometry = {};
 		geometry.vertexBuffer = m_vertexBuffer;
@@ -689,6 +701,7 @@ namespace
 			}
 		}
 
+		debugEvent.End();
 		SubmitMainPass(device, commandList);
 	}
 
@@ -736,6 +749,8 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("Bindless::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
+		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -793,6 +808,8 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
+		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
 		RHI::GeometryBinding geometry = {};
 		geometry.vertexBuffer = m_vertexBuffer;
@@ -823,6 +840,7 @@ namespace
 			}
 		}
 
+		debugEvent.End();
 		SubmitMainPass(device, commandList);
 	}
 

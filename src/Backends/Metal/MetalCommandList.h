@@ -29,6 +29,10 @@ namespace dy::Backends
         void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) override;
         void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
 
+        void BeginDebugEvent(const char* name, const RHI::DebugLabelColor& color = {}) override;
+        void EndDebugEvent() override;
+        void InsertDebugMarker(const char* name, const RHI::DebugLabelColor& color = {}) override;
+
         void Close() override;
 
         void Begin(void* drawable);

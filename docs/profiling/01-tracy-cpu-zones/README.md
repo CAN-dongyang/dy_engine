@@ -13,6 +13,7 @@
 - `Renderer::Render` 아래에 texture sync, material/light/shadow update와 선택된
   RenderPath의 resource preparation, shadow draw, main draw zone이 중첩된다.
 - Tracy memory allocation/free macro는 사용하지 않는다.
+- GitHub 최신 `main` 기준 커밋 `fbdbe44`에 이식했다.
 
 ## 변경 폴더
 
@@ -35,7 +36,7 @@ Backend마다 별도의 Tracy 코드를 추가하지 않고 동일 zone을 사�
 | Metal | 완료 | 없음 |
 | Vulkan | 대기 | Tracy ON/OFF 빌드, 예제 실행, timeline 확인 |
 | D3D12 | 대기 | Tracy ON/OFF 빌드, 예제 실행, timeline 확인 |
-| Null | 대기 | Tracy ON/OFF 빌드와 no-op 경로 확인 |
+| Null | 부분 완료 | Tracy OFF 빌드·실행 완료, Tracy ON 확인 대기 |
 
 ## Metal 검증 기록
 
@@ -44,6 +45,7 @@ Backend마다 별도의 Tracy 코드를 추가하지 않고 동일 zone을 사�
 - `03_Cube`: Metal shader 로드 후 창과 렌더 루프 실행 확인
 - Tracy Profiler `0.13.1`: Cube client 연결 확인
 - 테스트용 Cube는 확인 후 `Ctrl-C`로 종료했으므로 종료 코드 `130`은 의도된 값이다.
+- 최신 `main` 기반 `/private/tmp/dy_engine_latest_metal` 신규 구성에서도 전체 빌드와 `03_Cube` 실행을 다시 확인했다.
 
 ## 실행
 
@@ -68,6 +70,7 @@ cd build-tracy/examples/03_Cube
 - [x] 주요 Graphics CPU zone
 - [x] Tracy OFF 빌드
 - [x] Metal Tracy ON 빌드·실행
-- [ ] Null Tracy ON/OFF 빌드
+- [ ] Null Tracy ON 빌드
+- [x] Null Tracy OFF 빌드·실행
 - [ ] Vulkan Tracy ON/OFF 빌드·실행
 - [ ] D3D12 Tracy ON/OFF 빌드·실행

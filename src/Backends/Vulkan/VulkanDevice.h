@@ -32,7 +32,7 @@ public:
 	void DestroyPipelineState(dy::RHI::IPipelineState* pipeline) override;
 
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer() override;
-	
+
 	[[nodiscard]] bool RequiresClipSpaceYFlip() const override { return true; }
 
 protected:

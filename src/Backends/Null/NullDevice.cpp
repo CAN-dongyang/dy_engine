@@ -5,6 +5,10 @@
 #include "RHI/IPipelineState.h"
 #include "RHI/ITexture.h"
 
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 namespace dy::Backends
 {
 	namespace
@@ -39,6 +43,12 @@ namespace dy::Backends
 		class NullCommandList final : public RHI::ICommandList
 		{
 		public:
+			void Reset()
+			{
+				m_debugEventStack.clear();
+				m_debugMarkers.clear();
+			}
+
 			void BindGraphicsPipeline(RHI::IPipelineState*) override {}
 			void BindGlobalDescriptors() override {}
 			void BindGeometry(const RHI::GeometryBinding&) override {}
@@ -54,7 +64,29 @@ namespace dy::Backends
 			void BindIndexBuffer(RHI::IBuffer*, RHI::Format, uint32_t) override {}
 			void DrawInstanced(uint32_t, uint32_t, uint32_t, uint32_t) override {}
 			void DrawIndexedInstanced(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override {}
-			void Close() override {}
+			void BeginDebugEvent(const char* name, const RHI::DebugLabelColor&) override
+			{
+				if(name == nullptr || name[0] == '\0') throw std::invalid_argument("Null debug event name must not be empty.");
+				m_debugEventStack.emplace_back(name);
+			}
+			void EndDebugEvent() override
+			{
+				if(m_debugEventStack.empty()) throw std::logic_error("Null debug event end has no matching begin.");
+				m_debugEventStack.pop_back();
+			}
+			void InsertDebugMarker(const char* name, const RHI::DebugLabelColor&) override
+			{
+				if(name == nullptr || name[0] == '\0') throw std::invalid_argument("Null debug marker name must not be empty.");
+				m_debugMarkers.emplace_back(name);
+			}
+			void Close() override
+			{
+				if(!m_debugEventStack.empty()) throw std::logic_error("Null command list closed with an unbalanced debug event.");
+			}
+
+		private:
+			std::vector<std::string> m_debugEventStack;
+			std::vector<std::string> m_debugMarkers;
 		};
 	}
 
@@ -82,7 +114,10 @@ namespace dy::Backends
 		delete m_impl;
 	}
 
-	void NullDevice::BeginFrame() {}
+	void NullDevice::BeginFrame()
+	{
+		m_impl->commandList.Reset();
+	}
 
 	uint32_t NullDevice::GetCurrentFrameIndex() const
 	{

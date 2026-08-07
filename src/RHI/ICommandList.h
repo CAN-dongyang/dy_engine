@@ -36,6 +36,14 @@ namespace dy::RHI
 		uint32_t indexOffset = 0;
 	};
 
+	struct DebugLabelColor
+	{
+		float r = 1.0f;
+		float g = 1.0f;
+		float b = 1.0f;
+		float a = 1.0f;
+	};
+
 	class ICommandList
 	{
 	public:
@@ -72,10 +80,50 @@ namespace dy::RHI
 		virtual void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) = 0;
 		virtual void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) = 0;
 
+		// API-neutral GPU command annotations. Backends translate these to PIX events,
+		// Vulkan debug labels, Metal debug groups, or validation-only Null events.
+		virtual void BeginDebugEvent(const char* name, const DebugLabelColor& color = {}) = 0;
+		virtual void EndDebugEvent() = 0;
+		virtual void InsertDebugMarker(const char* name, const DebugLabelColor& color = {}) = 0;
+
 		// lifecycle
 		virtual void Close() = 0;
 
 		// Compute Commands
 		// virtual void DispatchCompute(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ) = 0;
+	};
+
+	class CommandDebugEventScope final
+	{
+	public:
+		CommandDebugEventScope(ICommandList* commandList, const char* name, const DebugLabelColor& color = {})
+			: m_commandList(commandList)
+		{
+			if(m_commandList != nullptr) m_commandList->BeginDebugEvent(name, color);
+		}
+
+		~CommandDebugEventScope()
+		{
+			End();
+		}
+
+		CommandDebugEventScope(const CommandDebugEventScope&) = delete;
+		CommandDebugEventScope& operator=(const CommandDebugEventScope&) = delete;
+
+		CommandDebugEventScope(CommandDebugEventScope&& other) noexcept
+			: m_commandList(other.m_commandList)
+		{
+			other.m_commandList = nullptr;
+		}
+
+		void End()
+		{
+			if(m_commandList == nullptr) return;
+			m_commandList->EndDebugEvent();
+			m_commandList = nullptr;
+		}
+
+	private:
+		ICommandList* m_commandList = nullptr;
 	};
 }

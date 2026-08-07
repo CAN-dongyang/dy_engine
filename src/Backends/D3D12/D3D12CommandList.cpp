@@ -4,6 +4,8 @@
 #include "D3D12PipelineState.h"
 #include "D3D12Texture.h"
 
+#include <WinPixEventRuntime/pix3.h>
+#include <algorithm>
 #include <d3d12.h>
 #include <wrl.h>
 
@@ -27,6 +29,14 @@ namespace dy::Backends
         constexpr uint32_t kOcclusionTextureRootParameter = 8;
         constexpr uint32_t kEmissiveTextureRootParameter = 9;
         constexpr uint32_t kBindlessTransformStorageRootParameter = 4;
+
+        UINT64 ToPixColor(const RHI::DebugLabelColor& color)
+        {
+            const auto channel = [](float value) {
+                return static_cast<UINT8>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+            };
+            return PIX_COLOR(channel(color.r), channel(color.g), channel(color.b));
+        }
 
         void TransitionTexture(ID3D12GraphicsCommandList* commandList, D3D12Texture* texture, D3D12_RESOURCE_STATES after)
         {
@@ -133,6 +143,23 @@ namespace dy::Backends
             m_internal->commandList->ResourceBarrier(1, &barrier);
         }
         m_internal->commandList->Close();
+    }
+
+    void D3D12CommandList::BeginDebugEvent(const char* name, const RHI::DebugLabelColor& color)
+    {
+        if(name == nullptr || name[0] == '\0') return;
+        PIXBeginEvent(m_internal->commandList.Get(), ToPixColor(color), "%s", name);
+    }
+
+    void D3D12CommandList::EndDebugEvent()
+    {
+        PIXEndEvent(m_internal->commandList.Get());
+    }
+
+    void D3D12CommandList::InsertDebugMarker(const char* name, const RHI::DebugLabelColor& color)
+    {
+        if(name == nullptr || name[0] == '\0') return;
+        PIXSetMarker(m_internal->commandList.Get(), ToPixColor(color), "%s", name);
     }
 
     void D3D12CommandList::SetBackBufferTexture(RHI::ITexture* texture)
