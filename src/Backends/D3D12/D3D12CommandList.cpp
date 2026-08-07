@@ -4,9 +4,9 @@
 #include "D3D12PipelineState.h"
 #include "D3D12Texture.h"
 
-#include <WinPixEventRuntime/pix3.h>
 #include <algorithm>
 #include <d3d12.h>
+#include <WinPixEventRuntime/pix3.h>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
