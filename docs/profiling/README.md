@@ -1,36 +1,30 @@
-# Profiling integration roadmap
+# Profiling integration
 
-프로파일링 기능은 아래 순서대로 한 단계씩 구현한다. 각 단계는 자기 폴더의
-`README.md`에 변경 파일, Backend별 상태, 빌드·실행 검증 결과를 기록하고 승인 후
-다음 단계로 넘어간다.
-
-현재 작업 기준은 GitHub `main`의 `fbdbe44`이며, 로컬
-`ProFiler` 브랜치에 단계별 커밋으로 적용한다.
+`dy_engine`의 공통 Graphics/RHI 계층에 CPU·GPU 프로파일링 기능을 제공한다. 계측은
+특정 예제가 아니라 엔진에 포함되므로 동일한 Renderer를 사용하는 애플리케이션에
+자동으로 적용된다.
 
 | 단계 | 기능 | 상태 |
 | --- | --- | --- |
-| [01](01-tracy-cpu-zones/README.md) | Tracy CPU zones | 기본 자동 포함, Metal 검증 완료 |
-| [02](02-renderdoc-debug-events/README.md) | RenderDoc debug event/marker/label | 구현 완료, Metal 캡처 확인 완료 |
-| [03](03-gpu-timestamp-queries/README.md) | GPU timestamp query | 전 Backend 구현, Metal·Null 검증 완료 |
-| [03B](03b-in-app-profiler-hud/README.md) | 프로그램 내부 profiler HUD + F11 그래프 | 구현 완료, Metal·Null 빌드 완료 |
-| [04](04-gpu-resource-allocation-counters/README.md) | GPU resource allocation counter | 전 Backend 구현, Metal·Null 검증 완료 |
+| [01](01-tracy-cpu-zones/README.md) | Tracy CPU zones | 구현 완료 |
+| [02](02-renderdoc-debug-events/README.md) | GPU debug event/marker/label | 구현 완료 |
+| [03](03-gpu-timestamp-queries/README.md) | GPU timestamp query | 구현 완료 |
+| [03B](03b-in-app-profiler-hud/README.md) | In-app profiler HUD | 구현 완료 |
+| [04](04-gpu-resource-allocation-counters/README.md) | GPU resource object counters | 구현 완료 |
 
-## 공통 원칙
+## 플랫폼 상태
 
-- RHI 공개 계약은 API 중립적인 이름을 사용한다.
-- Vulkan, D3D12, Metal은 같은 RHI 계약을 각 native API로 번역한다.
-- Backend가 지원하지 않는 기능은 조용히 흉내 내지 않고 지원 여부 또는 실패를 명시한다.
-- scope 기반 기능은 RAII wrapper로 정상 종료와 조기 반환 모두에서 닫히게 한다.
-- memory allocation/free 추적과 일반 CPU heap memory tracking은 범위에서 제외한다.
-- 기능은 특정 예제가 아니라 엔진에 넣어, 엔진을 사용하는 모든 실행 파일에서 자동 동작하게 한다.
-- 한 단계가 끝날 때마다 diff, 빌드, 실행 결과를 이 문서와 단계 문서에 반영한다.
+| 플랫폼 | 빌드 | 실행·도구 검증 |
+| --- | --- | --- |
+| Null | 로컬 빌드 및 contract test 통과 | 리소스 카운터 lifecycle 검증 |
+| Metal | macOS CI 및 Xcode 빌드 통과 | Cube 실행, Xcode GPU Capture label 확인 |
+| Vulkan | Ubuntu CI 빌드 통과 | RenderDoc 캡처 검증 대기 |
+| D3D12 | Windows CI 빌드 통과 | PIX/RenderDoc 캡처 검증 대기 |
 
-## 플랫폼 검증 행렬
+## 설계 원칙
 
-| 기능 | Null | Metal | Vulkan | D3D12 |
-| --- | --- | --- | --- | --- |
-| Tracy CPU zones | Tracy OFF 빌드·실행 완료 | Tracy ON 빌드·실행 완료 | 빌드·실행 대기 | 빌드·실행 대기 |
-| Debug events | 빌드·실행 완료 | 빌드·실행·Xcode 캡처 완료 | 구현 완료, SDK 환경 검증 대기 | 구현 완료, Windows 검증 대기 |
-| Timestamp queries | Tracy ON 빌드 완료 | Tracy ON 빌드·실행 완료 | 구현 완료, SDK 환경 검증 대기 | 구현 완료, Windows 검증 대기 |
-| In-app profiler HUD | 빌드 완료 | Makefile·Xcode 빌드 및 실행 완료 | 공통 RHI 구현, SDK 검증 대기 | 공통 RHI 구현, Windows 검증 대기 |
-| Resource counters | 자동 테스트·빌드 완료 | Tracy ON 빌드 완료 | 구현 완료, SDK 환경 검증 대기 | 구현 완료, Windows 검증 대기 |
+- RHI 공개 API는 graphics API에 독립적인 이름을 사용한다.
+- Backend가 공통 API를 D3D12, Vulkan, Metal native 기능으로 변환한다.
+- begin/end 형태의 계측은 RAII scope로 수명을 관리한다.
+- 지원하지 않는 기능은 렌더링을 중단하지 않고 비활성화된다.
+- 일반 CPU heap 및 GPU memory byte tracking은 포함하지 않는다.
