@@ -17,6 +17,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #if defined(_WIN32)
@@ -535,6 +536,9 @@ struct VulkanDevice::Impl
 	dy::RHI::ICommandList* AcquireCommandList() { return m_commandList; }
 	void Submit(dy::RHI::ICommandList** cmdLists, uint32_t count);
 	void Present();
+	[[nodiscard]] bool SupportsGpuTimestamps() const { return m_gpuTimestampsSupported; }
+	[[nodiscard]] uint32_t GetMaxGpuTimestampScopes() const { return m_gpuTimestampsSupported ? 32u : 0u; }
+	[[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, dy::RHI::GpuTimestampResult& result) const;
 
 	dy::RHI::IBuffer* CreateBuffer(const dy::RHI::BufferDesc& desc);
 	dy::RHI::ITexture* CreateTexture(const dy::RHI::TextureDesc& desc);
@@ -565,6 +569,7 @@ private:
 	bool CreateFramebuffers();
 	bool CreateCommandPool();
 	bool CreateCommandBuffer();
+	bool CreateGpuTimestampQueryPools();
 	bool CreateFallbackTexture();
 
 	bool CreateShadowMapResources();
@@ -580,6 +585,8 @@ private:
 	void RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
 	void RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
 	void RecordDebugEventsAt(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t drawIndex, bool depthOnlyPass, size_t& eventIndex);
+	void RecordGpuTimestampEventsAt(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t drawIndex, bool depthOnlyPass, size_t& eventIndex);
+	void CollectGpuTimestampResults(uint32_t frameIndex);
 	void BeginDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const;
 	void EndDebugLabel(VkCommandBuffer commandBuffer) const;
 	void InsertDebugLabel(VkCommandBuffer commandBuffer, const char* name, const dy::RHI::DebugLabelColor& color) const;
@@ -606,6 +613,28 @@ private:
 
 	VkCommandPool m_commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> m_commandBuffers;
+	static constexpr uint32_t kMaxGpuTimestampQueriesPerFrame = 64u;
+	struct GpuTimestampPair
+	{
+		std::string name;
+		uint32_t beginQuery = 0;
+		uint32_t endQuery = 0;
+	};
+	struct OpenGpuTimestamp
+	{
+		std::string name;
+		uint32_t beginQuery = UINT32_MAX;
+	};
+	std::vector<VkQueryPool> m_gpuTimestampQueryPools;
+	std::vector<std::vector<GpuTimestampPair>> m_gpuTimestampPairs;
+	std::vector<uint32_t> m_gpuTimestampQueryCounts;
+	std::vector<OpenGpuTimestamp> m_recordingGpuTimestampStack;
+	std::unordered_map<std::string, dy::RHI::GpuTimestampResult> m_completedGpuTimestamps;
+	uint32_t m_recordingGpuTimestampQuery = 0;
+	uint32_t m_timestampValidBits = 0;
+	double m_timestampPeriodNanoseconds = 0.0;
+	uint64_t m_timestampFrameSerial = 0;
+	bool m_gpuTimestampsSupported = false;
 
 	VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
 
@@ -748,6 +777,21 @@ dy::RHI::ITexture* VulkanDevice::GetBackBuffer()
 	return m_impl->GetBackBuffer();
 }
 
+bool VulkanDevice::SupportsGpuTimestamps() const
+{
+	return m_impl->SupportsGpuTimestamps();
+}
+
+uint32_t VulkanDevice::GetMaxGpuTimestampScopes() const
+{
+	return m_impl->GetMaxGpuTimestampScopes();
+}
+
+bool VulkanDevice::TryGetLastGpuTimestamp(const char* name, dy::RHI::GpuTimestampResult& result) const
+{
+	return m_impl->TryGetLastGpuTimestamp(name, result);
+}
+
 int VulkanDevice::Initialize(const void* windowHandle, const dy::RHI::DeviceDesc& desc)
 {
 	return m_impl->Initialize(windowHandle, desc);
@@ -797,6 +841,7 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 		if (!CreateDepthResources()) return -1;
 		if (!CreateFramebuffers()) return -1;
 		if (!CreateCommandBuffer()) return -1;
+		if (!CreateGpuTimestampQueryPools()) return -1;
 		if (!CreateSyncObjects()) return -1;
 	} catch (const std::exception& e) {
 		SDL_Log("Vulkan Initialization failed: %s", e.what());
@@ -952,6 +997,7 @@ void VulkanDevice::Impl::BeginFrame() {
 	if (!m_context.device || m_swapchain.GetHandle() == VK_NULL_HANDLE) return;
 
 	vkWaitForFences(m_context.device, 1, &m_inFlightFences[m_currentFrameIndex], VK_TRUE, UINT64_MAX);
+	CollectGpuTimestampResults(m_currentFrameIndex);
 
 	const VkResult acquireResult = vkAcquireNextImageKHR(
 		m_context.device, m_swapchain.GetHandle(), m_frameAcquireTimeoutNanoseconds,
@@ -1134,6 +1180,10 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 		if (indices.IsComplete() && !swapchainSupport.formats.empty() && !swapchainSupport.presentModes.empty()) {
 			m_context.physicalDevice = device;
 			m_context.queueIndices = indices;
+			m_timestampValidBits = families[indices.graphicsFamily].timestampValidBits;
+			VkPhysicalDeviceProperties properties{};
+			vkGetPhysicalDeviceProperties(device, &properties);
+			m_timestampPeriodNanoseconds = static_cast<double>(properties.limits.timestampPeriod);
 			return true;
 		}
 	}
@@ -1228,20 +1278,81 @@ void VulkanDevice::Impl::RecordDebugEventsAt(
 	}
 }
 
+void VulkanDevice::Impl::RecordGpuTimestampEventsAt(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	uint32_t drawIndex,
+	bool depthOnlyPass,
+	size_t& eventIndex) {
+	while (eventIndex < commandList.m_gpuTimestampEvents.size() &&
+		commandList.m_gpuTimestampEvents[eventIndex].drawIndex == drawIndex) {
+		const VulkanCommandList::GpuTimestampEvent& event = commandList.m_gpuTimestampEvents[eventIndex++];
+		if (event.depthOnlyPass != depthOnlyPass) continue;
+
+		if (event.type == VulkanCommandList::GpuTimestampEventType::Begin) {
+			OpenGpuTimestamp open{};
+			open.name = event.name;
+			if (m_recordingGpuTimestampQuery + 2u <= kMaxGpuTimestampQueriesPerFrame) {
+				open.beginQuery = m_recordingGpuTimestampQuery++;
+				vkCmdWriteTimestamp(
+					commandBuffer,
+					VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+					m_gpuTimestampQueryPools[m_currentFrameIndex],
+					open.beginQuery);
+			}
+			m_recordingGpuTimestampStack.push_back(std::move(open));
+		} else {
+			if (m_recordingGpuTimestampStack.empty()) continue;
+			OpenGpuTimestamp open = std::move(m_recordingGpuTimestampStack.back());
+			m_recordingGpuTimestampStack.pop_back();
+			if (open.beginQuery == UINT32_MAX) continue;
+			const uint32_t endQuery = m_recordingGpuTimestampQuery++;
+			vkCmdWriteTimestamp(
+				commandBuffer,
+				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+				m_gpuTimestampQueryPools[m_currentFrameIndex],
+				endQuery);
+			m_gpuTimestampPairs[m_currentFrameIndex].push_back({ std::move(open.name), open.beginQuery, endQuery });
+		}
+	}
+}
+
 void VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandList) {
 	VkCommandBuffer commandBuffer = m_commandBuffers[m_currentFrameIndex];
 	vkResetCommandBuffer(commandBuffer, 0);
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+	if (m_gpuTimestampsSupported) {
+		vkCmdResetQueryPool(commandBuffer, m_gpuTimestampQueryPools[m_currentFrameIndex], 0, kMaxGpuTimestampQueriesPerFrame);
+		m_recordingGpuTimestampQuery = 0;
+		m_recordingGpuTimestampStack.clear();
+		m_gpuTimestampPairs[m_currentFrameIndex].clear();
+		m_gpuTimestampQueryCounts[m_currentFrameIndex] = 0;
+	}
 
 	// Pass 1: Shadow Pass 
 	if (m_shadowRenderPass != VK_NULL_HANDLE && m_shadowPipeline != VK_NULL_HANDLE) {
+		uint32_t shadowBeginQuery = UINT32_MAX;
+		if (m_gpuTimestampsSupported && m_recordingGpuTimestampQuery + 2u <= kMaxGpuTimestampQueriesPerFrame) {
+			shadowBeginQuery = m_recordingGpuTimestampQuery++;
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				m_gpuTimestampQueryPools[m_currentFrameIndex], shadowBeginQuery);
+		}
 		RecordShadowPass(commandBuffer, commandList);
+		if (shadowBeginQuery != UINT32_MAX) {
+			const uint32_t shadowEndQuery = m_recordingGpuTimestampQuery++;
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+				m_gpuTimestampQueryPools[m_currentFrameIndex], shadowEndQuery);
+			m_gpuTimestampPairs[m_currentFrameIndex].push_back({ "Shadow", shadowBeginQuery, shadowEndQuery });
+		}
 	}
 
 	// Pass 2: Main Pass
 	RecordMainPass(commandBuffer, commandList);
+	if (m_gpuTimestampsSupported) {
+		m_gpuTimestampQueryCounts[m_currentFrameIndex] = m_recordingGpuTimestampQuery;
+	}
 
 	vkEndCommandBuffer(commandBuffer);
 }
@@ -1277,8 +1388,10 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 	size_t debugEventIndex = 0;
+	size_t gpuTimestampEventIndex = 0;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
 		RecordDebugEventsAt(commandBuffer, commandList, drawIndex, true, debugEventIndex);
+		if (m_gpuTimestampsSupported) RecordGpuTimestampEventsAt(commandBuffer, commandList, drawIndex, true, gpuTimestampEventIndex);
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 		if (pipelineState == nullptr || !pipelineState->IsShadowPassEnabled()) continue;
@@ -1341,6 +1454,7 @@ void VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 		}
 	}
 	RecordDebugEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), true, debugEventIndex);
+	if (m_gpuTimestampsSupported) RecordGpuTimestampEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), true, gpuTimestampEventIndex);
 
 	vkCmdEndRenderPass(commandBuffer);
 	return;
@@ -1375,8 +1489,10 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 	VkDescriptorSet currentBindlessDescriptorSet = VK_NULL_HANDLE;
 	size_t debugEventIndex = 0;
+	size_t gpuTimestampEventIndex = 0;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
 		RecordDebugEventsAt(commandBuffer, commandList, drawIndex, false, debugEventIndex);
+		if (m_gpuTimestampsSupported) RecordGpuTimestampEventsAt(commandBuffer, commandList, drawIndex, false, gpuTimestampEventIndex);
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 		if (pipelineState == nullptr) continue;
@@ -1478,6 +1594,7 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 		}
 	}
 	RecordDebugEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), false, debugEventIndex);
+	if (m_gpuTimestampsSupported) RecordGpuTimestampEventsAt(commandBuffer, commandList, static_cast<uint32_t>(commandList.m_drawCalls.size()), false, gpuTimestampEventIndex);
 
 	vkCmdEndRenderPass(commandBuffer);
 }
@@ -1797,6 +1914,76 @@ bool VulkanDevice::Impl::CreateCommandBuffer() {
 	allocInfo.commandBufferCount = m_maxFramesInFlight;
 	m_commandBuffers.resize(m_maxFramesInFlight);
 	return vkAllocateCommandBuffers(m_context.device, &allocInfo, m_commandBuffers.data()) == VK_SUCCESS;
+}
+
+bool VulkanDevice::Impl::CreateGpuTimestampQueryPools() {
+	m_gpuTimestampsSupported = m_timestampValidBits > 0u && m_timestampPeriodNanoseconds > 0.0;
+	if (!m_gpuTimestampsSupported) return true;
+
+	m_gpuTimestampQueryPools.assign(m_maxFramesInFlight, VK_NULL_HANDLE);
+	m_gpuTimestampPairs.resize(m_maxFramesInFlight);
+	m_gpuTimestampQueryCounts.assign(m_maxFramesInFlight, 0u);
+	VkQueryPoolCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+	createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+	createInfo.queryCount = kMaxGpuTimestampQueriesPerFrame;
+	for (uint32_t i = 0; i < m_maxFramesInFlight; ++i) {
+		if (vkCreateQueryPool(m_context.device, &createInfo, nullptr, &m_gpuTimestampQueryPools[i]) != VK_SUCCESS) {
+			for (VkQueryPool queryPool : m_gpuTimestampQueryPools) {
+				if (queryPool != VK_NULL_HANDLE) vkDestroyQueryPool(m_context.device, queryPool, nullptr);
+			}
+			m_gpuTimestampQueryPools.clear();
+			m_gpuTimestampPairs.clear();
+			m_gpuTimestampQueryCounts.clear();
+			m_gpuTimestampsSupported = false;
+			break;
+		}
+	}
+	m_commandList->SetGpuTimestampScopeCapacity(m_gpuTimestampsSupported ? 32u : 0u);
+	return true;
+}
+
+void VulkanDevice::Impl::CollectGpuTimestampResults(uint32_t frameIndex) {
+	if (!m_gpuTimestampsSupported || frameIndex >= m_gpuTimestampQueryPools.size()) return;
+	const uint32_t queryCount = m_gpuTimestampQueryCounts[frameIndex];
+	if (queryCount == 0u || m_gpuTimestampPairs[frameIndex].empty()) return;
+
+	std::vector<uint64_t> ticks(queryCount);
+	const VkResult result = vkGetQueryPoolResults(
+		m_context.device,
+		m_gpuTimestampQueryPools[frameIndex],
+		0,
+		queryCount,
+		ticks.size() * sizeof(uint64_t),
+		ticks.data(),
+		sizeof(uint64_t),
+		VK_QUERY_RESULT_64_BIT);
+	if (result != VK_SUCCESS) return;
+
+	++m_timestampFrameSerial;
+	const uint64_t validMask = m_timestampValidBits >= 64u
+		? UINT64_MAX
+		: ((uint64_t{1} << m_timestampValidBits) - 1u);
+	for (const GpuTimestampPair& pair : m_gpuTimestampPairs[frameIndex]) {
+		const uint64_t begin = ticks[pair.beginQuery] & validMask;
+		const uint64_t end = ticks[pair.endQuery] & validMask;
+		const uint64_t delta = m_timestampValidBits >= 64u
+			? end - begin
+			: (end - begin) & validMask;
+		const uint64_t durationNanoseconds = static_cast<uint64_t>(
+			static_cast<long double>(delta) * static_cast<long double>(m_timestampPeriodNanoseconds));
+		m_completedGpuTimestamps[pair.name] = { durationNanoseconds, m_timestampFrameSerial };
+	}
+	m_gpuTimestampPairs[frameIndex].clear();
+	m_gpuTimestampQueryCounts[frameIndex] = 0u;
+}
+
+bool VulkanDevice::Impl::TryGetLastGpuTimestamp(const char* name, dy::RHI::GpuTimestampResult& result) const {
+	if (name == nullptr) return false;
+	const auto it = m_completedGpuTimestamps.find(name);
+	if (it == m_completedGpuTimestamps.end()) return false;
+	result = it->second;
+	return true;
 }
 
 bool VulkanDevice::Impl::CreateSyncObjects() {
@@ -2461,6 +2648,10 @@ void VulkanDevice::Impl::DestroyDeviceResources() {
 		for (auto s : m_imageAvailableSemaphores) vkDestroySemaphore(m_context.device, s, nullptr);
 		for (auto s : m_renderFinishedSemaphores) vkDestroySemaphore(m_context.device, s, nullptr);
 		for (auto f : m_inFlightFences) vkDestroyFence(m_context.device, f, nullptr);
+		for (VkQueryPool queryPool : m_gpuTimestampQueryPools) {
+			if (queryPool != VK_NULL_HANDLE) vkDestroyQueryPool(m_context.device, queryPool, nullptr);
+		}
+		m_gpuTimestampQueryPools.clear();
 		if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_context.device, m_commandPool, nullptr);
 		DestroySwapchainResources();
 		vkDestroyDevice(m_context.device, nullptr);

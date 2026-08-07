@@ -297,6 +297,18 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Render");
 	if(device == nullptr || m_path == nullptr) return;
 
+	// Backends publish only completed-frame results. Because this lives in the
+	// engine renderer, every application using dy_engine gets the same plots.
+	RHI::GpuTimestampResult gpuTimestamp = {};
+	if(device->TryGetLastGpuTimestamp("Shadow", gpuTimestamp))
+	{
+		DY_PROFILE_GPU_MILLISECONDS("GPU.Shadow.ms", static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0);
+	}
+	if(device->TryGetLastGpuTimestamp("MainForward", gpuTimestamp))
+	{
+		DY_PROFILE_GPU_MILLISECONDS("GPU.MainForward.ms", static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0);
+	}
+
 	// 공유 준비: 텍스처 GPU 레지던시 + 머티리얼 상태(모든 전략 공통).
 	m_gpuScene.SyncTextures(scene, device);
 	EnsureMaterialStateCapacity(scene.GetMaterialCount());

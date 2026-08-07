@@ -25,6 +25,9 @@ namespace dy::Backends
         void DestroyTexture(RHI::ITexture* texture) override;
         void DestroyPipelineState(RHI::IPipelineState* pipeline) override;
         bool UpdateTexture(RHI::ITexture* texture, const void* data, uint32_t rowPitch) override;
+        [[nodiscard]] bool SupportsGpuTimestamps() const override;
+        [[nodiscard]] uint32_t GetMaxGpuTimestampScopes() const override;
+        [[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const override;
         [[nodiscard]] RHI::DescriptorIndex AllocateDescriptorSlot() override;
         void UpdateDescriptorSlot(RHI::DescriptorIndex index, RHI::ITexture* texture) override;
 

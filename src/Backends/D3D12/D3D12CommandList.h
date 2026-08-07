@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include "RHI/ICommandList.h"
+#include "RHI/IDevice.h"
 
 namespace dy::Backends
 {
@@ -10,7 +11,10 @@ namespace dy::Backends
     {
     public:
         // 디바이스, 백버퍼 리소스, RTV 핸들 주소를 받습니다.
-        D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr, void* globalDescriptorHeap = nullptr, uint32_t srvDescriptorSize = 0);
+        D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr,
+            void* globalDescriptorHeap = nullptr, uint32_t srvDescriptorSize = 0,
+            void* timestampQueryHeap = nullptr, void* timestampReadbackBuffer = nullptr,
+            uint32_t timestampQueryOffset = 0, uint32_t timestampQueryCapacity = 0);
         ~D3D12CommandList() override;
 
         void Reset();
@@ -41,12 +45,16 @@ namespace dy::Backends
         void BeginDebugEvent(const char* name, const RHI::DebugLabelColor& color = {}) override;
         void EndDebugEvent() override;
         void InsertDebugMarker(const char* name, const RHI::DebugLabelColor& color = {}) override;
+        bool BeginGpuTimestamp(const char* name) override;
+        void EndGpuTimestamp() override;
 
         void Close() override;
         void SetDepthStencilView(size_t dsvHandlePtr);
         void SetBackBufferTexture(RHI::ITexture* texture); // Close 에서 백버퍼 상태를 추적기로 전이하기 위함
 
         void* GetNativeList(); // 디바이스가 가져가기 위한 함수
+        void CollectGpuTimestampResults(uint64_t timestampFrequency, uint64_t frameSerial);
+        [[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const;
 
     private:
         D3D12CommandListInternal* m_internal;

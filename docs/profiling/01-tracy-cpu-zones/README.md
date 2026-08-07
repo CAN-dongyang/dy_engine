@@ -7,13 +7,17 @@
 
 ## 현재 구현
 
-- `DY_ENABLE_TRACY` CMake option을 제공하며 기본값은 `OFF`다.
+- `DY_ENABLE_TRACY` CMake option을 제공하며 기본값은 `ON`이다. 필요할 때만
+  `-DDY_ENABLE_TRACY=OFF`로 명시적으로 끈다.
 - Tracy `v0.13.1`을 선택적으로 연결한다.
 - `DY_PROFILE_CPU_ZONE_NAMED`가 Tracy의 RAII scoped zone을 감싼다.
 - `Renderer::Render` 아래에 texture sync, material/light/shadow update와 선택된
   RenderPath의 resource preparation, shadow draw, main draw zone이 중첩된다.
 - Tracy memory allocation/free macro는 사용하지 않는다.
 - GitHub 최신 `main` 기준 커밋 `fbdbe44`에 이식했다.
+- 계측은 Cube가 아니라 `dy_engine`과 public `Engine_Options`에 연결된다. 따라서
+  엔진을 링크하는 어떤 실행 파일이든 자기 프로세스 안에서 Tracy client가 자동으로
+  시작되고, Profiler에는 그 실행 파일의 이름으로 나타난다.
 
 ## 변경 폴더
 
@@ -52,7 +56,6 @@ Backend마다 별도의 Tracy 코드를 추가하지 않고 동일 zone을 사�
 ```bash
 cmake -S . -B build-tracy \
   -DUSE_METAL=ON \
-  -DDY_ENABLE_TRACY=ON \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build-tracy -j4
 ```
@@ -67,6 +70,7 @@ cd build-tracy/examples/03_Cube
 ## 완료 조건
 
 - [x] 공통 RAII CPU zone wrapper
+- [x] 엔진을 사용하는 모든 실행 파일에 기본 포함
 - [x] 주요 Graphics CPU zone
 - [x] Tracy OFF 빌드
 - [x] Metal Tracy ON 빌드·실행

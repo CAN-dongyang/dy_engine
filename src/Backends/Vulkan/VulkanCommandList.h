@@ -40,10 +40,13 @@ public:
 	void BeginDebugEvent(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
 	void EndDebugEvent() override;
 	void InsertDebugMarker(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
+	bool BeginGpuTimestamp(const char* name) override;
+	void EndGpuTimestamp() override;
 	void Close() override;
 
 	void Begin();
 	void End();
+	void SetGpuTimestampScopeCapacity(uint32_t capacity) { m_gpuTimestampScopeCapacity = capacity; }
 
 private:
 	static constexpr uint32_t kMaxConstantBufferBindings = kMaxDescriptorBindings;
@@ -104,6 +107,20 @@ private:
 		dy::RHI::DebugLabelColor color = {};
 	};
 
+	enum class GpuTimestampEventType
+	{
+		Begin,
+		End
+	};
+
+	struct GpuTimestampEvent
+	{
+		GpuTimestampEventType type = GpuTimestampEventType::Begin;
+		uint32_t drawIndex = 0;
+		bool depthOnlyPass = false;
+		std::string name;
+	};
+
 	friend struct VulkanDevice::Impl;
 	std::array<float, 4> m_clearColor = { 0.4f, 0.7f, 1.0f, 1.0f };
 	float m_clearDepth = 1.0f;
@@ -124,6 +141,10 @@ private:
 	std::vector<DrawCall> m_drawCalls;
 	std::vector<DebugEvent> m_debugEvents;
 	uint32_t m_debugEventDepth = 0;
+	std::vector<GpuTimestampEvent> m_gpuTimestampEvents;
+	uint32_t m_gpuTimestampDepth = 0;
+	uint32_t m_gpuTimestampScopeCapacity = 0;
+	uint32_t m_gpuTimestampScopeCount = 0;
 	bool m_isClosed = false;
 };
 

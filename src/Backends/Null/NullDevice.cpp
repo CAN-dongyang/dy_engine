@@ -7,6 +7,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace dy::Backends
@@ -43,10 +44,20 @@ namespace dy::Backends
 		class NullCommandList final : public RHI::ICommandList
 		{
 		public:
+			struct TimestampPair
+			{
+				std::string name;
+				uint64_t beginTick = 0;
+				uint64_t endTick = 0;
+			};
+
 			void Reset()
 			{
 				m_debugEventStack.clear();
 				m_debugMarkers.clear();
+				m_timestampStack.clear();
+				m_timestampPairs.clear();
+				m_nextTick = 1;
 			}
 
 			void BindGraphicsPipeline(RHI::IPipelineState*) override {}
@@ -79,14 +90,35 @@ namespace dy::Backends
 				if(name == nullptr || name[0] == '\0') throw std::invalid_argument("Null debug marker name must not be empty.");
 				m_debugMarkers.emplace_back(name);
 			}
+			bool BeginGpuTimestamp(const char* name) override
+			{
+				if(name == nullptr || name[0] == '\0') throw std::invalid_argument("Null GPU timestamp name must not be empty.");
+				if(m_timestampPairs.size() + m_timestampStack.size() >= 32u) return false;
+				m_timestampStack.push_back({ name, m_nextTick++, 0 });
+				return true;
+			}
+			void EndGpuTimestamp() override
+			{
+				if(m_timestampStack.empty()) throw std::logic_error("Null GPU timestamp end has no matching begin.");
+				TimestampPair pair = std::move(m_timestampStack.back());
+				m_timestampStack.pop_back();
+				pair.endTick = m_nextTick++;
+				m_timestampPairs.push_back(std::move(pair));
+			}
 			void Close() override
 			{
 				if(!m_debugEventStack.empty()) throw std::logic_error("Null command list closed with an unbalanced debug event.");
+				if(!m_timestampStack.empty()) throw std::logic_error("Null command list closed with an unbalanced GPU timestamp.");
 			}
+
+			const std::vector<TimestampPair>& GetTimestampPairs() const { return m_timestampPairs; }
 
 		private:
 			std::vector<std::string> m_debugEventStack;
 			std::vector<std::string> m_debugMarkers;
+			std::vector<TimestampPair> m_timestampStack;
+			std::vector<TimestampPair> m_timestampPairs;
+			uint64_t m_nextTick = 1;
 		};
 	}
 
@@ -102,6 +134,8 @@ namespace dy::Backends
 			RHI::TextureUsage::RenderTarget
 		});
 		RHI::DescriptorIndex nextDescriptorIndex = 0;
+		uint64_t frameSerial = 0;
+		std::unordered_map<std::string, RHI::GpuTimestampResult> completedTimestamps;
 	};
 
 	NullDevice::NullDevice()
@@ -116,6 +150,11 @@ namespace dy::Backends
 
 	void NullDevice::BeginFrame()
 	{
+		for(const NullCommandList::TimestampPair& pair : m_impl->commandList.GetTimestampPairs())
+		{
+			m_impl->completedTimestamps[pair.name] = { pair.endTick - pair.beginTick, m_impl->frameSerial };
+		}
+		++m_impl->frameSerial;
 		m_impl->commandList.Reset();
 	}
 
@@ -179,6 +218,15 @@ namespace dy::Backends
 	RHI::ITexture* NullDevice::GetBackBuffer()
 	{
 		return &m_impl->backBuffer;
+	}
+
+	bool NullDevice::TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const
+	{
+		if(name == nullptr) return false;
+		const auto it = m_impl->completedTimestamps.find(name);
+		if(it == m_impl->completedTimestamps.end()) return false;
+		result = it->second;
+		return true;
 	}
 
 	int NullDevice::Initialize(const void*, const RHI::DeviceDesc&)

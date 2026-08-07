@@ -446,6 +446,7 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "Shadow");
 		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
 		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
@@ -502,6 +503,7 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "MainForward");
 		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
 		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
@@ -552,6 +554,7 @@ namespace
 		}
 
 		debugEvent.End();
+		gpuTiming.End();
 		SubmitMainPass(device, commandList);
 	}
 
@@ -605,6 +608,7 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "Shadow");
 		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
 		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
@@ -664,6 +668,7 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "MainForward");
 		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
 		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
@@ -702,6 +707,7 @@ namespace
 		}
 
 		debugEvent.End();
+		gpuTiming.End();
 		SubmitMainPass(device, commandList);
 	}
 
@@ -749,6 +755,7 @@ namespace
 	{
 		DY_PROFILE_CPU_ZONE_NAMED("Bindless::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "Shadow");
 		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
 		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
@@ -808,6 +815,7 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "MainForward");
 		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
 		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
@@ -841,6 +849,7 @@ namespace
 		}
 
 		debugEvent.End();
+		gpuTiming.End();
 		SubmitMainPass(device, commandList);
 	}
 

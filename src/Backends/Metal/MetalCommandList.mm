@@ -6,6 +6,11 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -18,6 +23,20 @@ namespace dy::Backends
         constexpr uint32_t kMaxPushConstantBytes = 256u;
         constexpr uint32_t kVertexStorageBinding = RHI::ShaderLayoutDesc{}.vertexStorageBinding;
         constexpr uint32_t kIndexStorageBinding = RHI::ShaderLayoutDesc{}.indexStorageBinding;
+        constexpr uint32_t kMaxGpuTimestampSamples = 64u;
+
+        struct MetalTimestampPair
+        {
+            std::string name;
+            uint32_t beginSample = 0;
+            uint32_t endSample = 0;
+        };
+
+        struct MetalTimestampState
+        {
+            mutable std::mutex mutex;
+            std::unordered_map<std::string, RHI::GpuTimestampResult> completed;
+        };
 
         id<MTLBuffer> GetMetalBuffer(RHI::IBuffer* buffer)
         {
@@ -41,6 +60,7 @@ namespace dy::Backends
     struct MetalCommandList::Impl
     {
         id<MTLCommandQueue>          commandQueue   = nil;
+        id<MTLDevice>                device         = nil;
         id<MTLCommandBuffer>         commandBuffer  = nil;
         id<MTLRenderCommandEncoder>  encoder        = nil;
         MTLRenderPassDescriptor*     passDescriptor = nil;
@@ -52,16 +72,42 @@ namespace dy::Backends
         uint32_t                     renderWidth = 1;
         uint32_t                     renderHeight = 1;
         uint32_t                     debugEventDepth = 0;
+        id<MTLCounterSet>            timestampCounterSet = nil;
+        id<MTLCounterSampleBuffer>   timestampSampleBuffer = nil;
+        uint32_t                     nextTimestampSample = 0;
+        std::vector<MetalTimestampPair> timestampStack;
+        std::vector<MetalTimestampPair> timestampPairs;
+        std::shared_ptr<MetalTimestampState> timestampState = std::make_shared<MetalTimestampState>();
+        bool                         gpuTimestampsSupported = false;
     };
 
-    MetalCommandList::MetalCommandList(void* commandQueue)
+    MetalCommandList::MetalCommandList(void* commandQueue, void* device)
         : m_impl(new Impl())
     {
         m_impl->commandQueue = (__bridge id<MTLCommandQueue>)commandQueue;
+        m_impl->device = (__bridge id<MTLDevice>)device;
+
+        if(@available(macOS 11.0, *))
+        {
+            m_impl->gpuTimestampsSupported = [m_impl->device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+            if(m_impl->gpuTimestampsSupported)
+            {
+                for(id<MTLCounterSet> counterSet in m_impl->device.counterSets)
+                {
+                    if([counterSet.name isEqualToString:MTLCommonCounterSetTimestamp])
+                    {
+                        m_impl->timestampCounterSet = counterSet;
+                        break;
+                    }
+                }
+                m_impl->gpuTimestampsSupported = m_impl->timestampCounterSet != nil;
+            }
+        }
     }
 
     MetalCommandList::~MetalCommandList()
     {
+        [m_impl->timestampSampleBuffer release];
         delete m_impl;
     }
 
@@ -77,6 +123,26 @@ namespace dy::Backends
         m_impl->renderWidth = 1;
         m_impl->renderHeight = 1;
         m_impl->debugEventDepth = 0;
+        [m_impl->timestampSampleBuffer release];
+        m_impl->timestampSampleBuffer = nil;
+        m_impl->nextTimestampSample = 0;
+        m_impl->timestampStack.clear();
+        m_impl->timestampPairs.clear();
+
+        if(m_impl->gpuTimestampsSupported)
+        {
+            if(@available(macOS 11.0, *))
+            {
+                MTLCounterSampleBufferDescriptor* descriptor = [MTLCounterSampleBufferDescriptor new];
+                descriptor.counterSet = m_impl->timestampCounterSet;
+                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.sampleCount = kMaxGpuTimestampSamples;
+                descriptor.label = @"dy_engine GPU timestamps";
+                NSError* error = nil;
+                m_impl->timestampSampleBuffer = [m_impl->device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+                [descriptor release];
+            }
+        }
     }
 
     void MetalCommandList::SetRenderTargets(uint32_t numRenderTargets, RHI::ITexture** renderTargets, RHI::ITexture* depthStencil)
@@ -361,8 +427,41 @@ namespace dy::Backends
         [m_impl->encoder insertDebugSignpost:label];
     }
 
+    bool MetalCommandList::BeginGpuTimestamp(const char* name)
+    {
+        if(name == nullptr || name[0] == '\0' || m_impl->timestampSampleBuffer == nil)
+            return false;
+        if(m_impl->nextTimestampSample + 2u > kMaxGpuTimestampSamples)
+            return false;
+
+        EnsureRenderEncoder();
+        const uint32_t sampleIndex = m_impl->nextTimestampSample++;
+        [m_impl->encoder sampleCountersInBuffer:m_impl->timestampSampleBuffer
+                                   atSampleIndex:sampleIndex
+                                     withBarrier:YES];
+        m_impl->timestampStack.push_back({ name, sampleIndex, 0 });
+        return true;
+    }
+
+    void MetalCommandList::EndGpuTimestamp()
+    {
+        if(m_impl->timestampStack.empty())
+            throw std::logic_error("Metal GPU timestamp end has no matching begin.");
+
+        EnsureRenderEncoder();
+        MetalTimestampPair pair = std::move(m_impl->timestampStack.back());
+        m_impl->timestampStack.pop_back();
+        pair.endSample = m_impl->nextTimestampSample++;
+        [m_impl->encoder sampleCountersInBuffer:m_impl->timestampSampleBuffer
+                                   atSampleIndex:pair.endSample
+                                     withBarrier:YES];
+        m_impl->timestampPairs.push_back(std::move(pair));
+    }
+
     void MetalCommandList::Close()
     {
+        if(!m_impl->timestampStack.empty())
+            throw std::logic_error("Metal command list closed with an unbalanced GPU timestamp.");
         if(m_impl->encoder)
         {
             [m_impl->encoder endEncoding];
@@ -439,5 +538,46 @@ namespace dy::Backends
     void* MetalCommandList::GetNativeCommandBuffer() const
     {
         return (__bridge void*)m_impl->commandBuffer;
+    }
+
+    void MetalCommandList::InstallGpuTimestampCompletionHandler(uint64_t frameSerial)
+    {
+        if(m_impl->commandBuffer == nil || m_impl->timestampSampleBuffer == nil || m_impl->timestampPairs.empty())
+            return;
+
+        id<MTLCounterSampleBuffer> sampleBuffer = m_impl->timestampSampleBuffer;
+        const uint32_t sampleCount = m_impl->nextTimestampSample;
+        const std::vector<MetalTimestampPair> pairs = m_impl->timestampPairs;
+        const std::shared_ptr<MetalTimestampState> state = m_impl->timestampState;
+        [m_impl->commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer) {
+            if(commandBuffer.status != MTLCommandBufferStatusCompleted) return;
+            NSData* resolved = [sampleBuffer resolveCounterRange:NSMakeRange(0, sampleCount)];
+            if(resolved == nil || resolved.length < sampleCount * sizeof(MTLCounterResultTimestamp)) return;
+
+            const auto* samples = static_cast<const MTLCounterResultTimestamp*>(resolved.bytes);
+            std::lock_guard<std::mutex> lock(state->mutex);
+            for(const MetalTimestampPair& pair : pairs)
+            {
+                const uint64_t begin = samples[pair.beginSample].timestamp;
+                const uint64_t end = samples[pair.endSample].timestamp;
+                if(begin == MTLCounterErrorValue || end == MTLCounterErrorValue || end < begin) continue;
+                state->completed[pair.name] = { end - begin, frameSerial };
+            }
+        }];
+    }
+
+    bool MetalCommandList::SupportsGpuTimestamps() const
+    {
+        return m_impl->gpuTimestampsSupported;
+    }
+
+    bool MetalCommandList::TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const
+    {
+        if(name == nullptr) return false;
+        std::lock_guard<std::mutex> lock(m_impl->timestampState->mutex);
+        const auto it = m_impl->timestampState->completed.find(name);
+        if(it == m_impl->timestampState->completed.end()) return false;
+        result = it->second;
+        return true;
     }
 }

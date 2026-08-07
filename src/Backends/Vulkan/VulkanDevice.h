@@ -32,6 +32,9 @@ public:
 	void DestroyPipelineState(dy::RHI::IPipelineState* pipeline) override;
 
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer() override;
+	[[nodiscard]] bool SupportsGpuTimestamps() const override;
+	[[nodiscard]] uint32_t GetMaxGpuTimestampScopes() const override;
+	[[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, dy::RHI::GpuTimestampResult& result) const override;
 
 	[[nodiscard]] bool RequiresClipSpaceYFlip() const override { return true; }
 

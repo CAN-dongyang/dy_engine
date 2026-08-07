@@ -7,6 +7,10 @@
 #include <WinPixEventRuntime/pix3.h>
 #include <algorithm>
 #include <d3d12.h>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <wrl.h>
 
 using Microsoft::WRL::ComPtr;
@@ -80,6 +84,13 @@ namespace dy::Backends
 
     struct D3D12CommandListInternal
     {
+        struct TimestampPair
+        {
+            std::string name;
+            uint32_t beginQuery = 0;
+            uint32_t endQuery = 0;
+        };
+
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commandList;
         ComPtr<ID3D12Resource> backBuffer;
@@ -90,9 +101,19 @@ namespace dy::Backends
         ID3D12DescriptorHeap* globalDescriptorHeap = nullptr;
         uint32_t srvDescriptorSize = 0;
         D3D12Texture* backBufferTexture = nullptr; // 상태 추적기(GetBackBuffer 가 돌려주는 래퍼와 동일 리소스)
+        ID3D12QueryHeap* timestampQueryHeap = nullptr;
+        ID3D12Resource* timestampReadbackBuffer = nullptr;
+        uint32_t timestampQueryOffset = 0;
+        uint32_t timestampQueryCapacity = 0;
+        uint32_t nextTimestampQuery = 0;
+        std::vector<TimestampPair> timestampStack;
+        std::vector<TimestampPair> timestampPairs;
+        std::unordered_map<std::string, RHI::GpuTimestampResult> completedTimestamps;
     };
 
-    D3D12CommandList::D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr, void* globalDescriptorHeap, uint32_t srvDescriptorSize)
+    D3D12CommandList::D3D12CommandList(void* nativeDevice, void* nativeBackBuffer, size_t rtvHandlePtr,
+        void* globalDescriptorHeap, uint32_t srvDescriptorSize, void* timestampQueryHeap,
+        void* timestampReadbackBuffer, uint32_t timestampQueryOffset, uint32_t timestampQueryCapacity)
     {
         m_internal = new D3D12CommandListInternal();
         ID3D12Device* device = static_cast<ID3D12Device*>(nativeDevice);
@@ -102,6 +123,10 @@ namespace dy::Backends
         m_internal->device = device;
         m_internal->globalDescriptorHeap = static_cast<ID3D12DescriptorHeap*>(globalDescriptorHeap);
         m_internal->srvDescriptorSize = srvDescriptorSize;
+        m_internal->timestampQueryHeap = static_cast<ID3D12QueryHeap*>(timestampQueryHeap);
+        m_internal->timestampReadbackBuffer = static_cast<ID3D12Resource*>(timestampReadbackBuffer);
+        m_internal->timestampQueryOffset = timestampQueryOffset;
+        m_internal->timestampQueryCapacity = timestampQueryCapacity;
 
         device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_internal->allocator));
         device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_internal->allocator.Get(), nullptr, IID_PPV_ARGS(&m_internal->commandList));
@@ -122,10 +147,25 @@ namespace dy::Backends
     {
         m_internal->allocator->Reset();
         m_internal->commandList->Reset(m_internal->allocator.Get(), nullptr);
+        m_internal->nextTimestampQuery = 0;
+        m_internal->timestampStack.clear();
+        m_internal->timestampPairs.clear();
     }
 
     void D3D12CommandList::Close()
     {
+        if(!m_internal->timestampStack.empty())
+            throw std::logic_error("D3D12 command list closed with an unbalanced GPU timestamp.");
+        if(m_internal->timestampQueryHeap != nullptr && m_internal->timestampReadbackBuffer != nullptr && m_internal->nextTimestampQuery > 0)
+        {
+            m_internal->commandList->ResolveQueryData(
+                m_internal->timestampQueryHeap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                m_internal->timestampQueryOffset,
+                m_internal->nextTimestampQuery,
+                m_internal->timestampReadbackBuffer,
+                static_cast<UINT64>(m_internal->timestampQueryOffset) * sizeof(uint64_t));
+        }
         // 백버퍼를 PRESENT 로 전이. 추적기(D3D12Texture)를 거쳐 상태를 갱신해야
         // 다음 프레임 재사용 시 SetRenderTargets 가 올바른 before-state 로 배리어를 친다.
         if (m_internal->backBufferTexture != nullptr)
@@ -160,6 +200,71 @@ namespace dy::Backends
     {
         if(name == nullptr || name[0] == '\0') return;
         PIXSetMarker(m_internal->commandList.Get(), ToPixColor(color), "%s", name);
+    }
+
+    bool D3D12CommandList::BeginGpuTimestamp(const char* name)
+    {
+        if(name == nullptr || name[0] == '\0' || m_internal->timestampQueryHeap == nullptr)
+            return false;
+        if(m_internal->nextTimestampQuery + 2u > m_internal->timestampQueryCapacity)
+            return false;
+
+        const uint32_t localQuery = m_internal->nextTimestampQuery++;
+        const uint32_t nativeQuery = m_internal->timestampQueryOffset + localQuery;
+        m_internal->commandList->EndQuery(m_internal->timestampQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, nativeQuery);
+        m_internal->timestampStack.push_back({ name, localQuery, 0 });
+        return true;
+    }
+
+    void D3D12CommandList::EndGpuTimestamp()
+    {
+        if(m_internal->timestampStack.empty())
+            throw std::logic_error("D3D12 GPU timestamp end has no matching begin.");
+
+        D3D12CommandListInternal::TimestampPair pair = std::move(m_internal->timestampStack.back());
+        m_internal->timestampStack.pop_back();
+        pair.endQuery = m_internal->nextTimestampQuery++;
+        m_internal->commandList->EndQuery(
+            m_internal->timestampQueryHeap,
+            D3D12_QUERY_TYPE_TIMESTAMP,
+            m_internal->timestampQueryOffset + pair.endQuery);
+        m_internal->timestampPairs.push_back(std::move(pair));
+    }
+
+    void D3D12CommandList::CollectGpuTimestampResults(uint64_t timestampFrequency, uint64_t frameSerial)
+    {
+        if(timestampFrequency == 0 || m_internal->timestampReadbackBuffer == nullptr || m_internal->timestampPairs.empty())
+            return;
+
+        const SIZE_T byteOffset = static_cast<SIZE_T>(m_internal->timestampQueryOffset) * sizeof(uint64_t);
+        const SIZE_T byteEnd = byteOffset + static_cast<SIZE_T>(m_internal->nextTimestampQuery) * sizeof(uint64_t);
+        D3D12_RANGE readRange = { byteOffset, byteEnd };
+		void* mappedData = nullptr;
+		if(FAILED(m_internal->timestampReadbackBuffer->Map(0, &readRange, &mappedData)))
+			return;
+
+		const uint64_t* allTicks = static_cast<const uint64_t*>(mappedData);
+        const uint64_t* ticks = allTicks + m_internal->timestampQueryOffset;
+        for(const D3D12CommandListInternal::TimestampPair& pair : m_internal->timestampPairs)
+        {
+            const uint64_t begin = ticks[pair.beginQuery];
+            const uint64_t end = ticks[pair.endQuery];
+            if(end < begin) continue;
+            const uint64_t durationNanoseconds = static_cast<uint64_t>(
+                (static_cast<long double>(end - begin) * 1000000000.0L) / static_cast<long double>(timestampFrequency));
+            m_internal->completedTimestamps[pair.name] = { durationNanoseconds, frameSerial };
+        }
+        D3D12_RANGE writtenRange = { 0, 0 };
+        m_internal->timestampReadbackBuffer->Unmap(0, &writtenRange);
+    }
+
+    bool D3D12CommandList::TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const
+    {
+        if(name == nullptr) return false;
+        const auto it = m_internal->completedTimestamps.find(name);
+        if(it == m_internal->completedTimestamps.end()) return false;
+        result = it->second;
+        return true;
     }
 
     void D3D12CommandList::SetBackBufferTexture(RHI::ITexture* texture)

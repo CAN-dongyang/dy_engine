@@ -18,6 +18,7 @@ namespace dy::Backends
         CAMetalLayer*       metalLayer      = nil;
         id<CAMetalDrawable> currentDrawable = nil;
         uint32_t            frameIndex      = 0;
+        uint64_t            frameSerial     = 0;
 
         MetalCommandList*   commandList     = nullptr;
         MetalTexture*       backBufferTex   = nullptr;  // cached; not owned by Renderer
@@ -52,7 +53,8 @@ namespace dy::Backends
         [window.contentView setLayer:m_impl->metalLayer];
 
         m_impl->commandList = new MetalCommandList(
-            (__bridge void*)m_impl->commandQueue
+            (__bridge void*)m_impl->commandQueue,
+            (__bridge void*)m_impl->device
         );
 
         return 0;
@@ -62,6 +64,7 @@ namespace dy::Backends
     {
         m_impl->currentDrawable = [m_impl->metalLayer nextDrawable];
         m_impl->frameIndex      = (m_impl->frameIndex + 1) % 2;
+        ++m_impl->frameSerial;
 
         m_impl->commandList->Begin(
             (__bridge void*)m_impl->currentDrawable
@@ -94,6 +97,7 @@ namespace dy::Backends
             auto* metalCmdList = static_cast<MetalCommandList*>(cmdLists[i]);
             id<MTLCommandBuffer> cmdBuffer = (__bridge id<MTLCommandBuffer>)
                 metalCmdList->GetNativeCommandBuffer();
+            metalCmdList->InstallGpuTimestampCompletionHandler(m_impl->frameSerial);
             [cmdBuffer commit];
         }
     }
@@ -143,6 +147,21 @@ namespace dy::Backends
                             withBytes:data
                           bytesPerRow:rowPitch];
         return true;
+    }
+
+    bool MetalDevice::SupportsGpuTimestamps() const
+    {
+        return m_impl->commandList != nullptr && m_impl->commandList->SupportsGpuTimestamps();
+    }
+
+    uint32_t MetalDevice::GetMaxGpuTimestampScopes() const
+    {
+        return SupportsGpuTimestamps() ? 32u : 0u;
+    }
+
+    bool MetalDevice::TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const
+    {
+        return m_impl->commandList != nullptr && m_impl->commandList->TryGetLastGpuTimestamp(name, result);
     }
 
     RHI::DescriptorIndex MetalDevice::AllocateDescriptorSlot()

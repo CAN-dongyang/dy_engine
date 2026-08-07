@@ -1,13 +1,14 @@
 #pragma once
 #include <vector>
 #include "RHI/ICommandList.h"
+#include "RHI/IDevice.h"
 
 namespace dy::Backends
 {
     class MetalCommandList : public RHI::ICommandList
     {
     public:
-        MetalCommandList(void* commandQueue);
+        MetalCommandList(void* commandQueue, void* device);
         ~MetalCommandList() override;
 
         void BindGraphicsPipeline(RHI::IPipelineState* pipelineState) override;
@@ -32,11 +33,16 @@ namespace dy::Backends
         void BeginDebugEvent(const char* name, const RHI::DebugLabelColor& color = {}) override;
         void EndDebugEvent() override;
         void InsertDebugMarker(const char* name, const RHI::DebugLabelColor& color = {}) override;
+        bool BeginGpuTimestamp(const char* name) override;
+        void EndGpuTimestamp() override;
 
         void Close() override;
 
         void Begin(void* drawable);
         void* GetNativeCommandBuffer() const;
+        void InstallGpuTimestampCompletionHandler(uint64_t frameSerial);
+        [[nodiscard]] bool SupportsGpuTimestamps() const;
+        [[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const;
 
         void SetNativePipelineState(void* pipelineState);
         void SetNativeVertexBuffer(RHI::IBuffer* buffer, uint32_t index);

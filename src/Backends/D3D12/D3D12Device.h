@@ -33,6 +33,9 @@ public:
   void DestroyPipelineState(RHI::IPipelineState *pipeline) override;
 
   RHI::ITexture *GetBackBuffer() override;
+  [[nodiscard]] bool SupportsGpuTimestamps() const override;
+  [[nodiscard]] uint32_t GetMaxGpuTimestampScopes() const override;
+  [[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const override;
 
   [[nodiscard]] bool RequiresExplicitShadowPass() const override { return true; }
 

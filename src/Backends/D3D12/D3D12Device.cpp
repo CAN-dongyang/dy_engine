@@ -62,6 +62,10 @@ namespace dy::Backends
         ComPtr<ID3D12CommandAllocator> commandAllocators[2];
         ComPtr<ID3D12RootSignature> deviceRootSignature;
         ComPtr<ID3D12PipelineState> texturedTrianglePipeline;
+        ComPtr<ID3D12QueryHeap> timestampQueryHeap;
+        ComPtr<ID3D12Resource> timestampReadbackBuffer;
+        uint64_t timestampFrequency = 0;
+        uint64_t timestampFrameSerial = 0;
     };
 
     // 누적된 D3D12 검증 메시지를 stdout 으로 덤프하고 디바이스 제거 사유를 확인한다.
@@ -254,10 +258,39 @@ namespace dy::Backends
         m_internal->device->CreateDepthStencilView(m_internal->depthStencilBuffer.Get(), nullptr, m_internal->dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
         // 9. 커맨드 리스트 미리 할당
+        constexpr uint32_t kTimestampQueriesPerFrame = 64;
+        D3D12_QUERY_HEAP_DESC timestampHeapDesc = {};
+        timestampHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        timestampHeapDesc.Count = kTimestampQueriesPerFrame * 2u;
+        if(SUCCEEDED(m_internal->device->CreateQueryHeap(&timestampHeapDesc, IID_PPV_ARGS(&m_internal->timestampQueryHeap))))
+        {
+            CD3DX12_HEAP_PROPERTIES readbackHeapProps(D3D12_HEAP_TYPE_READBACK);
+            CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(
+                static_cast<UINT64>(timestampHeapDesc.Count) * sizeof(uint64_t));
+            if(FAILED(m_internal->device->CreateCommittedResource(
+                &readbackHeapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &readbackDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&m_internal->timestampReadbackBuffer))))
+            {
+                m_internal->timestampQueryHeap.Reset();
+            }
+        }
+        if(m_internal->timestampQueryHeap != nullptr && m_internal->timestampReadbackBuffer != nullptr)
+        {
+            m_internal->commandQueue->GetTimestampFrequency(&m_internal->timestampFrequency);
+        }
+
         D3D12_CPU_DESCRIPTOR_HANDLE currentRtv = m_internal->rtvHeap->GetCPUDescriptorHandleForHeapStart();
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_internal->dsvHeap->GetCPUDescriptorHandleForHeapStart();
         for (int i = 0; i < 2; i++) {
-            m_internal->commandLists[i] = new D3D12CommandList(m_internal->device.Get(), m_internal->renderTargets[i].Get(), currentRtv.ptr, m_internal->globalDescriptorHeap.Get(), m_internal->srvDescriptorSize);
+            m_internal->commandLists[i] = new D3D12CommandList(
+                m_internal->device.Get(), m_internal->renderTargets[i].Get(), currentRtv.ptr,
+                m_internal->globalDescriptorHeap.Get(), m_internal->srvDescriptorSize,
+                m_internal->timestampQueryHeap.Get(), m_internal->timestampReadbackBuffer.Get(),
+                static_cast<uint32_t>(i) * kTimestampQueriesPerFrame, kTimestampQueriesPerFrame);
             m_internal->commandLists[i]->SetDepthStencilView(dsvHandle.ptr); // DSV 등록
             m_internal->commandLists[i]->SetBackBufferTexture(m_internal->backBufferTextures[i]); // 백버퍼 상태 추적기 연결
             currentRtv.ptr += m_internal->rtvDescriptorSize;
@@ -268,6 +301,8 @@ namespace dy::Backends
     }
 
     void D3D12Device::BeginFrame() { 
+        m_internal->commandLists[m_internal->frameIndex]->CollectGpuTimestampResults(
+            m_internal->timestampFrequency, ++m_internal->timestampFrameSerial);
         m_internal->commandLists[m_internal->frameIndex]->Reset();
     }
     uint32_t D3D12Device::GetCurrentFrameIndex() const { return m_internal->frameIndex; }
@@ -628,5 +663,35 @@ namespace dy::Backends
 
     RHI::ITexture* D3D12Device::GetBackBuffer() { 
         return m_internal->backBufferTextures[m_internal->frameIndex]; 
+    }
+
+    bool D3D12Device::SupportsGpuTimestamps() const
+    {
+        return m_internal->timestampQueryHeap != nullptr &&
+            m_internal->timestampReadbackBuffer != nullptr &&
+            m_internal->timestampFrequency != 0;
+    }
+
+    uint32_t D3D12Device::GetMaxGpuTimestampScopes() const
+    {
+        return SupportsGpuTimestamps() ? 32u : 0u;
+    }
+
+    bool D3D12Device::TryGetLastGpuTimestamp(const char* name, RHI::GpuTimestampResult& result) const
+    {
+        bool found = false;
+        RHI::GpuTimestampResult candidate = {};
+        for(const D3D12CommandList* commandList : m_internal->commandLists)
+        {
+            RHI::GpuTimestampResult current = {};
+            if(commandList != nullptr && commandList->TryGetLastGpuTimestamp(name, current) &&
+                (!found || current.frameSerial > candidate.frameSerial))
+            {
+                candidate = current;
+                found = true;
+            }
+        }
+        if(found) result = candidate;
+        return found;
     }
 }

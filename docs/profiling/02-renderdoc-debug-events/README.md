@@ -66,7 +66,7 @@ GitHub 최신 `main`의 `fbdbe44`를 기준으로 새 브랜치에 이식한 뒤
 | Metal 실행 | `03_Cube` 창 실행 성공, shader/command 오류 없음 |
 | Vulkan | 현재 Mac에 Vulkan SDK와 `glslc`가 없어 빌드·RenderDoc 검증 대기 |
 | D3D12 | 현재 Mac에서 컴파일할 수 없어 Windows 빌드·RenderDoc 검증 대기 |
-| Metal 캡처 | Xcode GPU Capture에서 이름 확인 대기 |
+| Metal 캡처 | Xcode GPU Capture에서 `MainForward`, `pushDebugGroup`, `popDebugGroup` 확인 완료 |
 
 Null 빌드에서 기존 `Mesh.cpp`의 `nodiscard` 경고 1개가 있었으며 이번 단계 변경과 무관하다.
 
@@ -85,7 +85,7 @@ cd /private/tmp/dy_engine_latest_metal/examples/03_Cube
 - [x] RAII scope wrapper
 - [x] Null nesting 검증
 - [x] Metal 구현·빌드·실행 확인
-- [ ] Metal Xcode GPU Capture 확인
+- [x] Metal Xcode GPU Capture 확인
 - [x] Vulkan 구현
 - [ ] Vulkan SDK 빌드·RenderDoc 캡처 확인
 - [x] D3D12 구현

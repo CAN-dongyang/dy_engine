@@ -24,6 +24,9 @@ void VulkanCommandList::Begin()
 	m_drawCalls.clear();
 	m_debugEvents.clear();
 	m_debugEventDepth = 0;
+	m_gpuTimestampEvents.clear();
+	m_gpuTimestampDepth = 0;
+	m_gpuTimestampScopeCount = 0;
 	m_isClosed = false;
 }
 
@@ -194,9 +197,29 @@ void VulkanCommandList::InsertDebugMarker(const char* name, const dy::RHI::Debug
 	m_debugEvents.push_back({ DebugEventType::Marker, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name, color });
 }
 
+bool VulkanCommandList::BeginGpuTimestamp(const char* name)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan GPU timestamp name must not be empty.");
+	if (m_gpuTimestampScopeCount >= m_gpuTimestampScopeCapacity) return false;
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_gpuTimestampEvents.push_back({ GpuTimestampEventType::Begin, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name });
+	++m_gpuTimestampDepth;
+	++m_gpuTimestampScopeCount;
+	return true;
+}
+
+void VulkanCommandList::EndGpuTimestamp()
+{
+	if (m_gpuTimestampDepth == 0) throw std::logic_error("Vulkan GPU timestamp end has no matching begin.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_gpuTimestampEvents.push_back({ GpuTimestampEventType::End, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, {} });
+	--m_gpuTimestampDepth;
+}
+
 void VulkanCommandList::Close()
 {
 	if (m_debugEventDepth != 0) throw std::logic_error("Vulkan command list closed with an unbalanced debug event.");
+	if (m_gpuTimestampDepth != 0) throw std::logic_error("Vulkan command list closed with an unbalanced GPU timestamp.");
 	m_isClosed = true;
 }
 

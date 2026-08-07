@@ -86,11 +86,54 @@ namespace dy::RHI
 		virtual void EndDebugEvent() = 0;
 		virtual void InsertDebugMarker(const char* name, const DebugLabelColor& color = {}) = 0;
 
+		// Records a named GPU timestamp pair. Unsupported backends return false and
+		// the RAII wrapper below becomes a no-op. Results are exposed by IDevice only
+		// after the frame that owns the queries has completed on the GPU.
+		[[nodiscard]] virtual bool BeginGpuTimestamp(const char* name) = 0;
+		virtual void EndGpuTimestamp() = 0;
+
 		// lifecycle
 		virtual void Close() = 0;
 
 		// Compute Commands
 		// virtual void DispatchCompute(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ) = 0;
+	};
+
+	class CommandGpuTimestampScope final
+	{
+	public:
+		CommandGpuTimestampScope(ICommandList* commandList, const char* name)
+			: m_commandList(commandList)
+		{
+			if(m_commandList == nullptr || !m_commandList->BeginGpuTimestamp(name))
+			{
+				m_commandList = nullptr;
+			}
+		}
+
+		~CommandGpuTimestampScope()
+		{
+			End();
+		}
+
+		CommandGpuTimestampScope(const CommandGpuTimestampScope&) = delete;
+		CommandGpuTimestampScope& operator=(const CommandGpuTimestampScope&) = delete;
+
+		CommandGpuTimestampScope(CommandGpuTimestampScope&& other) noexcept
+			: m_commandList(other.m_commandList)
+		{
+			other.m_commandList = nullptr;
+		}
+
+		void End()
+		{
+			if(m_commandList == nullptr) return;
+			m_commandList->EndGpuTimestamp();
+			m_commandList = nullptr;
+		}
+
+	private:
+		ICommandList* m_commandList = nullptr;
 	};
 
 	class CommandDebugEventScope final

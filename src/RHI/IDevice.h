@@ -29,6 +29,12 @@ namespace dy::RHI
 		ShaderLayoutDesc shaderLayout = {};
 	};
 
+	struct GpuTimestampResult
+	{
+		uint64_t durationNanoseconds = 0;
+		uint64_t frameSerial = 0;
+	};
+
 	class IDevice
 	{
 	public:
@@ -55,6 +61,17 @@ namespace dy::RHI
 		virtual void DestroyPipelineState(IPipelineState* pipeline) = 0;
 
 		virtual bool UpdateTexture(ITexture* texture, const void* data, uint32_t rowPitch) = 0;
+
+		// Timestamp results are intentionally delayed: true means a completed GPU
+		// frame has published a value for this name, never an in-flight estimate.
+		[[nodiscard]] virtual bool SupportsGpuTimestamps() const { return false; }
+		[[nodiscard]] virtual uint32_t GetMaxGpuTimestampScopes() const { return 0; }
+		[[nodiscard]] virtual bool TryGetLastGpuTimestamp(const char* name, GpuTimestampResult& result) const
+		{
+			(void)name;
+			(void)result;
+			return false;
+		}
 
 		// (Vulkan: 내부 처리 → false. D3D12: 명시 필요 → true. Phase 3에서 통일 예정.)
 		[[nodiscard]] virtual bool RequiresExplicitShadowPass() const { return false; }
