@@ -68,20 +68,26 @@ namespace dy::Backends
         else
             pipeDesc.colorAttachments[0].pixelFormat = ToMTLFormat(desc.renderTargetFormat);
 
-        if(desc.depthEnable && desc.depthStencilFormat != RHI::Format::Unknown)
+		pipeDesc.colorAttachments[0].blendingEnabled = YES;
+		pipeDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pipeDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pipeDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pipeDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+		pipeDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorZero;
+
+		// Attachment format is part of Metal pipeline compatibility even when the
+		// HUD disables depth testing inside a pass that still owns a depth target.
+        if(desc.depthStencilFormat != RHI::Format::Unknown)
             pipeDesc.depthAttachmentPixelFormat = ToMTLFormat(desc.depthStencilFormat);
 
         m_impl->pipelineState = [mtlDevice newRenderPipelineStateWithDescriptor:pipeDesc error:&error];
         if(!m_impl->pipelineState) { NSLog(@"파이프라인 생성 실패: %@", error); return; }
 
         // DepthStencil 상태 생성
-        if(desc.depthEnable)
-        {
-            MTLDepthStencilDescriptor* depthDesc = [MTLDepthStencilDescriptor new];
-            depthDesc.depthCompareFunction = MTLCompareFunctionLess;
-            depthDesc.depthWriteEnabled    = YES;
-            m_impl->depthStencilState = [mtlDevice newDepthStencilStateWithDescriptor:depthDesc];
-        }
+		MTLDepthStencilDescriptor* depthDesc = [MTLDepthStencilDescriptor new];
+		depthDesc.depthCompareFunction = desc.depthEnable ? MTLCompareFunctionLess : MTLCompareFunctionAlways;
+		depthDesc.depthWriteEnabled = desc.depthEnable ? YES : NO;
+		m_impl->depthStencilState = [mtlDevice newDepthStencilStateWithDescriptor:depthDesc];
     }
 
     MetalPipeline::~MetalPipeline()

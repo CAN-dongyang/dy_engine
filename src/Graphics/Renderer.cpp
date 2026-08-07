@@ -14,6 +14,7 @@
 #include "Graphics/ShadowMath.h"
 #include "Math/Math.h"
 #include "Platform/Profiler.h"
+#include "Platform/Window.h"
 #include "RHI/IBuffer.h"
 #include "RHI/IDevice.h"
 #include "RHI/IPipelineState.h"
@@ -192,6 +193,10 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 	BuildRenderPassPlan();
 	BuildPipelineStates(device);
 	m_path = CreateRenderPath(m_config.bindingMode);
+	if(m_config.enableProfilerHud)
+	{
+		m_profilerHud.Initialize(device, m_config.profilerHudStartsExpanded);
+	}
 	return m_pipeline != nullptr && m_path != nullptr;
 }
 
@@ -248,6 +253,9 @@ void Renderer::Shutdown(RHI::IDevice* device)
 {
 	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Shutdown");
 	if(device == nullptr) return;
+	m_profilerHud.Shutdown(device);
+	m_hasLastFrameStart = false;
+	m_lastCpuRenderMilliseconds = 0.0;
 
 	if(m_path != nullptr) m_path->Shutdown(device);
 	m_path.reset();
@@ -285,6 +293,11 @@ void Renderer::Shutdown(RHI::IDevice* device)
 		device->DestroyPipelineState(m_shadowPipeline);
 		m_shadowPipeline = nullptr;
 	}
+	if(m_profilerHudPipeline != nullptr)
+	{
+		device->DestroyPipelineState(m_profilerHudPipeline);
+		m_profilerHudPipeline = nullptr;
+	}
 	if(m_pipeline != nullptr)
 	{
 		device->DestroyPipelineState(m_pipeline);
@@ -296,6 +309,18 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 {
 	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Render");
 	if(device == nullptr || m_path == nullptr) return;
+	const auto renderStart = std::chrono::steady_clock::now();
+	double frameMilliseconds = 0.0;
+	if(m_hasLastFrameStart)
+	{
+		frameMilliseconds = std::chrono::duration<double, std::milli>(renderStart - m_lastFrameStart).count();
+	}
+	m_lastFrameStart = renderStart;
+	m_hasLastFrameStart = true;
+	if(m_config.enableProfilerHud && Platform::Window::ConsumeKeyPress(Platform::Key::F11))
+	{
+		m_profilerHud.ToggleExpanded();
+	}
 
 	// Backends publish only completed-frame results. Because this lives in the
 	// engine renderer, every application using dy_engine gets the same plots.
@@ -304,9 +329,13 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	{
 		DY_PROFILE_GPU_MILLISECONDS("GPU.Shadow.ms", static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0);
 	}
-	if(device->TryGetLastGpuTimestamp("MainForward", gpuTimestamp))
+	const bool hasGpuMainTimestamp = device->TryGetLastGpuTimestamp("MainForward", gpuTimestamp);
+	const double gpuMainMilliseconds = hasGpuMainTimestamp
+		? static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0
+		: 0.0;
+	if(hasGpuMainTimestamp)
 	{
-		DY_PROFILE_GPU_MILLISECONDS("GPU.MainForward.ms", static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0);
+		DY_PROFILE_GPU_MILLISECONDS("GPU.MainForward.ms", gpuMainMilliseconds);
 	}
 
 	// 공유 준비: 텍스처 GPU 레지던시 + 머티리얼 상태(모든 전략 공통).
@@ -331,6 +360,21 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	UpdateLightingBuffer(scene, device);
 	context.lightingBuffer = m_lightingBuffer;
 	context.shadowMatrixBuffer = m_shadowMatrixBuffer;
+	if(m_config.enableProfilerHud && m_profilerHudPipeline != nullptr)
+	{
+		if(RHI::ITexture* backBuffer = device->GetBackBuffer())
+		{
+			ProfilerHudMetrics metrics = {};
+			metrics.frameMilliseconds = frameMilliseconds;
+			metrics.fps = frameMilliseconds > 0.001 ? 1000.0 / frameMilliseconds : 0.0;
+			metrics.cpuRenderMilliseconds = m_lastCpuRenderMilliseconds;
+			metrics.gpuMainMilliseconds = gpuMainMilliseconds;
+			metrics.hasGpuMain = hasGpuMainTimestamp;
+			m_profilerHud.PrepareFrame(device, metrics, backBuffer->GetWidth(), backBuffer->GetHeight(), m_clipYFlip);
+			context.profilerHudPipeline = m_profilerHudPipeline;
+			context.profilerHud = &m_profilerHud;
+		}
+	}
 
 	// 명시적 그림자 패스가 필요한 백엔드(D3D12)면 깊이타겟/PSO 를 컨텍스트에 넣는다.
 	// RenderPath 가 메인 패스 전에 깊이 전용 패스를 기록한다(Vulkan 은 내부 처리하므로 비워둠).
@@ -354,6 +398,8 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 			m_path->RecordMainPass(scene, device, context);
 		}
 	}
+	m_lastCpuRenderMilliseconds = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - renderStart).count();
 }
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
@@ -386,6 +432,15 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	// desc.shaderLayout = m_config.shaderLayout;
 
 	m_pipeline = device->CreateGraphicsPipeline(desc);
+	if(m_config.enableProfilerHud)
+	{
+		RHI::GraphicsPipelineDesc hudDesc = desc;
+		hudDesc.depthEnable = false;
+		hudDesc.enableShadowPass = false;
+		hudDesc.shadowVertexShader = nullptr;
+		hudDesc.shadowVertexShaderSize = 0;
+		m_profilerHudPipeline = device->CreateGraphicsPipeline(hudDesc);
+	}
 
 	// 백엔드가 그림자 깊이 패스를 내부 처리하지 못하면(D3D12) Graphics 가 명시적으로
 	// 깊이 전용 패스를 기록한다. 이를 위해 별도의 깊이 전용 PSO(픽셀 셰이더 없음)를 만든다.

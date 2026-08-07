@@ -12,6 +12,7 @@
 | [01](01-tracy-cpu-zones/README.md) | Tracy CPU zones | 기본 자동 포함, Metal 검증 완료 |
 | [02](02-renderdoc-debug-events/README.md) | RenderDoc debug event/marker/label | 구현 완료, Metal 캡처 확인 완료 |
 | [03](03-gpu-timestamp-queries/README.md) | GPU timestamp query | 전 Backend 구현, Metal·Null 검증 완료 |
+| [03B](03b-in-app-profiler-hud/README.md) | 프로그램 내부 profiler HUD + F11 그래프 | 구현 완료, Metal·Null 빌드 완료 |
 | [04](04-gpu-resource-allocation-counters/README.md) | GPU resource allocation counter | 구현 대기 |
 
 ## 공통 원칙
@@ -31,4 +32,5 @@
 | Tracy CPU zones | Tracy OFF 빌드·실행 완료 | Tracy ON 빌드·실행 완료 | 빌드·실행 대기 | 빌드·실행 대기 |
 | Debug events | 빌드·실행 완료 | 빌드·실행·Xcode 캡처 완료 | 구현 완료, SDK 환경 검증 대기 | 구현 완료, Windows 검증 대기 |
 | Timestamp queries | Tracy ON 빌드 완료 | Tracy ON 빌드·실행 완료 | 구현 완료, SDK 환경 검증 대기 | 구현 완료, Windows 검증 대기 |
+| In-app profiler HUD | 빌드 완료 | Makefile·Xcode 빌드 및 실행 완료 | 공통 RHI 구현, SDK 검증 대기 | 공통 RHI 구현, Windows 검증 대기 |
 | Resource counters | 대기 | 대기 | 대기 | 대기 |

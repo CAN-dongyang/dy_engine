@@ -24,6 +24,7 @@ Backend에 있다. 따라서 `dy_engine`으로 만든 다른 프로그램도 별
 
 - `Shadow`, `MainForward` 범위를 RenderPath가 자동 기록한다.
 - 완료된 결과는 Tracy plot `GPU.Shadow.ms`, `GPU.MainForward.ms`로 자동 전송한다.
+- 같은 `MainForward` 결과를 프로그램 내부 profiler HUD에도 자동 표시한다.
 - Tracy는 기본 활성화되어 실행 파일 내부에서 시작한다.
 - 지원하지 않는 GPU에서는 timestamp만 조용히 비활성화되고 렌더링은 계속된다.
 - 일반 memory allocation/free tracking은 사용하지 않는다.
@@ -79,8 +80,9 @@ cd build-tracy/examples/03_Cube
 ./Cube
 ```
 
-Tracy Profiler에서 실행 중인 프로그램에 연결한 뒤 `GPU.MainForward.ms` plot을 확인한다.
-그림자가 활성화된 Backend에서는 `GPU.Shadow.ms`도 함께 나타난다.
+프로그램 창 왼쪽 위에서 `GPU` 값을 확인하고 `F11`을 누르면 120 frame 그래프가 열린다.
+더 깊은 분석이 필요할 때만 Tracy Profiler를 선택적으로 연결해 `GPU.MainForward.ms` plot과
+CPU zone timeline을 확인한다. 그림자가 활성화된 Backend에서는 `GPU.Shadow.ms`도 함께 나타난다.
 
 ## 완료 조건
 

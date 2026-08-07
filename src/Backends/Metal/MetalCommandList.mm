@@ -278,8 +278,7 @@ namespace dy::Backends
         auto* depth    = (__bridge id<MTLDepthStencilState>)pipeline->GetNativeDepthStencil();
 
         [m_impl->encoder setRenderPipelineState:native];
-        if(depth)
-            [m_impl->encoder setDepthStencilState:depth];
+		[m_impl->encoder setDepthStencilState:depth];
     }
 
     void MetalCommandList::BindGlobalDescriptors()

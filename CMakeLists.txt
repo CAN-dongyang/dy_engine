@@ -13,6 +13,7 @@ add_library(${PROJECT_NAME} STATIC
 	"src/RHI/IDevice.cpp"
 	"src/Graphics/Renderer.cpp"
 	"src/Graphics/RenderPath.cpp"
+	"src/Graphics/ProfilerHud.cpp"
 	"src/Graphics/GpuScene.cpp"
 	"src/Graphics/ImageFile.cpp"
 	"src/Graphics/Mesh.cpp"

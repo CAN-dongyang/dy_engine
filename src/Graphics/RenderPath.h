@@ -27,6 +27,7 @@ namespace dy::RHI
 namespace dy::Graphics
 {
 	class Scene;
+	class ProfilerHud;
 
 	inline constexpr uint32_t kInvalidDescriptorIndex = 0xFFFFFFFFu;
 
@@ -58,6 +59,8 @@ namespace dy::Graphics
 		RHI::ITexture* depthStencil = nullptr;
 		RHI::IBuffer* lightingBuffer = nullptr;
 		RHI::IBuffer* shadowMatrixBuffer = nullptr;
+		RHI::IPipelineState* profilerHudPipeline = nullptr;
+		ProfilerHud* profilerHud = nullptr;
 		GpuScene* gpuScene = nullptr;
 		const std::vector<SceneMaterialState>* materialStates = nullptr;
 

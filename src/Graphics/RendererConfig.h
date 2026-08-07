@@ -76,6 +76,10 @@ namespace dy::Graphics
 		float shadowSlopeBias = 0.003f;
 		float shadowNormalBias = 0.0f;
 		uint32_t shadowPcfRadius = 1;
+		// Built-in, API-neutral overlay. It is rendered into the application
+		// backbuffer and never requires the external Tracy viewer.
+		bool enableProfilerHud = true;
+		bool profilerHudStartsExpanded = false;
 
 		// 셰이더 바인딩 ABI(데이터). 미지정 시 엔진 표준 계약. 사용자 셰이더 제공 시 함께 지정.
 		RHI::ShaderLayoutDesc shaderLayout = {};

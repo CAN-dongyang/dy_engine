@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Graphics/Scene.h"
+#include "Graphics/ProfilerHud.h"
 #include "Platform/Profiler.h"
 #include "RHI/IBuffer.h"
 #include "RHI/ICommandList.h"
@@ -555,6 +556,10 @@ namespace
 
 		debugEvent.End();
 		gpuTiming.End();
+		if(context.profilerHud != nullptr)
+		{
+			context.profilerHud->Record(commandList, context.profilerHudPipeline, context.lightingBuffer, context.shadowMatrixBuffer);
+		}
 		SubmitMainPass(device, commandList);
 	}
 
@@ -708,6 +713,10 @@ namespace
 
 		debugEvent.End();
 		gpuTiming.End();
+		if(context.profilerHud != nullptr)
+		{
+			context.profilerHud->Record(commandList, context.profilerHudPipeline, context.lightingBuffer, context.shadowMatrixBuffer);
+		}
 		SubmitMainPass(device, commandList);
 	}
 
@@ -850,6 +859,10 @@ namespace
 
 		debugEvent.End();
 		gpuTiming.End();
+		if(context.profilerHud != nullptr)
+		{
+			context.profilerHud->Record(commandList, context.profilerHudPipeline, context.lightingBuffer, context.shadowMatrixBuffer);
+		}
 		SubmitMainPass(device, commandList);
 	}
 
