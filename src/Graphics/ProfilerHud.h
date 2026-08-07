@@ -23,6 +23,15 @@ namespace dy::Graphics
 		double cpuRenderMilliseconds = 0.0;
 		double gpuMainMilliseconds = 0.0;
 		bool hasGpuMain = false;
+		uint64_t liveBuffers = 0;
+		uint64_t createdBuffers = 0;
+		uint64_t destroyedBuffers = 0;
+		uint64_t liveTextures = 0;
+		uint64_t createdTextures = 0;
+		uint64_t destroyedTextures = 0;
+		uint64_t livePipelines = 0;
+		uint64_t createdPipelines = 0;
+		uint64_t destroyedPipelines = 0;
 	};
 
 	// Small dependency-free profiler overlay. Text uses an embedded 5x7 font and

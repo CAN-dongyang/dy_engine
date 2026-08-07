@@ -33,6 +33,18 @@ if(CMAKE_PROJECT_NAME  STREQUAL PROJECT_NAME)
 	add_subdirectory(examples)
 endif()
 
+# Null backend contract test: validates live/created/destroyed counts and that
+# null or repeated destroy requests cannot underflow or double-delete objects.
+include(CTest)
+if(BUILD_TESTING AND NOT USE_D3D12 AND NOT USE_METAL AND NOT USE_VULKAN)
+	add_executable(ResourceAllocationCountersTest
+		"tests/ResourceAllocationCountersTest.cpp"
+	)
+	target_link_libraries(ResourceAllocationCountersTest PRIVATE ${PROJECT_NAME} Backend_Null)
+	target_include_directories(ResourceAllocationCountersTest PRIVATE ${CMAKE_SOURCE_DIR}/src)
+	add_test(NAME ResourceAllocationCounters COMMAND ResourceAllocationCountersTest)
+endif()
+
 # ===== Configuration Messages =====
 if(WIN32)
     message(STATUS "Windows 환경 감지됨!")

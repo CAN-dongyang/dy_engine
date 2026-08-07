@@ -188,6 +188,20 @@ namespace
 		return buffer;
 	}
 
+	[[nodiscard]] std::string ResourceLine(const char* label, uint64_t live, uint64_t created, uint64_t destroyed)
+	{
+		char buffer[96] = {};
+		std::snprintf(
+			buffer,
+			sizeof(buffer),
+			"%s L %llu C %llu D %llu",
+			label,
+			static_cast<unsigned long long>(live),
+			static_cast<unsigned long long>(created),
+			static_cast<unsigned long long>(destroyed));
+		return buffer;
+	}
+
 	void Upload(RHI::IBuffer* buffer, const void* source, uint32_t size)
 	{
 		if(buffer == nullptr || source == nullptr || size == 0u) return;
@@ -267,18 +281,27 @@ void ProfilerHud::BuildGeometry(uint32_t width, uint32_t height, bool clipYFlip,
 
 	if(!m_expanded)
 	{
-		canvas.Quad(Palette::Background, x, y, x + 282.0f, y + 92.0f);
+		canvas.Quad(Palette::Background, x, y, x + 282.0f, y + 114.0f);
 		Text(canvas, Palette::Cyan, x + 12.0f, y + 10.0f, "DY PROFILER");
 		Text(canvas, Palette::White, x + 168.0f, y + 10.0f, "F11");
 		Text(canvas, Palette::White, x + 12.0f, y + 32.0f, ValueLine("FPS", metrics.fps));
 		Text(canvas, Palette::Green, x + 12.0f, y + 52.0f, ValueLine("CPU", metrics.cpuRenderMilliseconds, " MS"));
 		Text(canvas, Palette::Orange, x + 12.0f, y + 72.0f,
 			metrics.hasGpuMain ? ValueLine("GPU", metrics.gpuMainMilliseconds, " MS") : "GPU  N/A");
+		char resources[64] = {};
+		std::snprintf(
+			resources,
+			sizeof(resources),
+			"RES B %llu T %llu P %llu",
+			static_cast<unsigned long long>(metrics.liveBuffers),
+			static_cast<unsigned long long>(metrics.liveTextures),
+			static_cast<unsigned long long>(metrics.livePipelines));
+		Text(canvas, Palette::White, x + 12.0f, y + 92.0f, resources);
 	}
 	else
 	{
 		const float panelWidth = std::min(700.0f, static_cast<float>(width) - 28.0f);
-		const float panelHeight = std::min(386.0f, static_cast<float>(height) - 28.0f);
+		const float panelHeight = std::min(430.0f, static_cast<float>(height) - 28.0f);
 		canvas.Quad(Palette::Background, x, y, x + panelWidth, y + panelHeight);
 		Text(canvas, Palette::Cyan, x + 14.0f, y + 12.0f, "DY ENGINE PROFILER", 2.0f);
 		Text(canvas, Palette::White, x + panelWidth - 190.0f, y + 12.0f, "F11 HIDE", 2.0f);
@@ -287,12 +310,18 @@ void ProfilerHud::BuildGeometry(uint32_t width, uint32_t height, bool clipYFlip,
 		Text(canvas, Palette::Green, x + 240.0f, y + 38.0f, ValueLine("CPU RENDER", metrics.cpuRenderMilliseconds, " MS"));
 		Text(canvas, Palette::Orange, x + 240.0f, y + 60.0f,
 			metrics.hasGpuMain ? ValueLine("GPU MAIN", metrics.gpuMainMilliseconds, " MS") : "GPU MAIN  N/A");
-		Text(canvas, Palette::White, x + 14.0f, y + 90.0f, "FRAME TIME HISTORY");
+		Text(canvas, Palette::White, x + 14.0f, y + 88.0f,
+			ResourceLine("BUFFER", metrics.liveBuffers, metrics.createdBuffers, metrics.destroyedBuffers));
+		Text(canvas, Palette::White, x + 14.0f, y + 108.0f,
+			ResourceLine("TEXTURE", metrics.liveTextures, metrics.createdTextures, metrics.destroyedTextures));
+		Text(canvas, Palette::White, x + 14.0f, y + 128.0f,
+			ResourceLine("PIPELINE", metrics.livePipelines, metrics.createdPipelines, metrics.destroyedPipelines));
+		Text(canvas, Palette::White, x + 14.0f, y + 154.0f, "FRAME TIME HISTORY");
 
 		const float graphX = x + 16.0f;
-		const float graphY = y + 118.0f;
+		const float graphY = y + 182.0f;
 		const float graphW = panelWidth - 32.0f;
-		const float graphH = panelHeight - 158.0f;
+		const float graphH = panelHeight - 222.0f;
 		canvas.Quad(Palette::Grid, graphX, graphY, graphX + graphW, graphY + graphH);
 
 		float scaleMs = 33.33f;

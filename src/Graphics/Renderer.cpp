@@ -337,6 +337,10 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	{
 		DY_PROFILE_GPU_MILLISECONDS("GPU.MainForward.ms", gpuMainMilliseconds);
 	}
+	const RHI::ResourceAllocationCounters resourceCounters = device->GetResourceAllocationCounters();
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Buffers.Live", resourceCounters.buffers.live);
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Textures.Live", resourceCounters.textures.live);
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Pipelines.Live", resourceCounters.pipelines.live);
 
 	// 공유 준비: 텍스처 GPU 레지던시 + 머티리얼 상태(모든 전략 공통).
 	m_gpuScene.SyncTextures(scene, device);
@@ -370,6 +374,15 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 			metrics.cpuRenderMilliseconds = m_lastCpuRenderMilliseconds;
 			metrics.gpuMainMilliseconds = gpuMainMilliseconds;
 			metrics.hasGpuMain = hasGpuMainTimestamp;
+			metrics.liveBuffers = resourceCounters.buffers.live;
+			metrics.createdBuffers = resourceCounters.buffers.created;
+			metrics.destroyedBuffers = resourceCounters.buffers.destroyed;
+			metrics.liveTextures = resourceCounters.textures.live;
+			metrics.createdTextures = resourceCounters.textures.created;
+			metrics.destroyedTextures = resourceCounters.textures.destroyed;
+			metrics.livePipelines = resourceCounters.pipelines.live;
+			metrics.createdPipelines = resourceCounters.pipelines.created;
+			metrics.destroyedPipelines = resourceCounters.pipelines.destroyed;
 			m_profilerHud.PrepareFrame(device, metrics, backBuffer->GetWidth(), backBuffer->GetHeight(), m_clipYFlip);
 			context.profilerHudPipeline = m_profilerHudPipeline;
 			context.profilerHud = &m_profilerHud;

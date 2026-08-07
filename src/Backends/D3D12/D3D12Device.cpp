@@ -353,7 +353,9 @@ namespace dy::Backends
     }
 
     RHI::IBuffer* D3D12Device::CreateBuffer(const RHI::BufferDesc& desc) { 
-        return new D3D12Buffer(m_internal->device.Get(), desc);
+		RHI::IBuffer* buffer = new D3D12Buffer(m_internal->device.Get(), desc);
+		TrackBufferCreated(buffer);
+		return buffer;
     }
 
     RHI::IPipelineState* D3D12Device::CreateGraphicsPipeline(const RHI::GraphicsPipelineDesc& desc) {
@@ -520,7 +522,9 @@ namespace dy::Backends
 
         // 6. 래퍼 객체로 반환
         DumpInfoQueue(m_internal, "CreateGraphicsPipeline");
-        return new D3D12PipelineState(pPSO.Get(), pRootSignature.Get());
+		RHI::IPipelineState* pipeline = new D3D12PipelineState(pPSO.Get(), pRootSignature.Get());
+		TrackPipelineCreated(pipeline);
+		return pipeline;
     }
 
     RHI::DescriptorIndex D3D12Device::AllocateDescriptorSlot() {
@@ -583,7 +587,9 @@ namespace dy::Backends
     }
 
     RHI::ITexture* D3D12Device::CreateTexture(const RHI::TextureDesc& desc) {
-        return new D3D12Texture(m_internal->device.Get(), desc);
+		RHI::ITexture* texture = new D3D12Texture(m_internal->device.Get(), desc);
+		TrackTextureCreated(texture);
+		return texture;
     }
 
     bool D3D12Device::UpdateTexture(RHI::ITexture* texture, const void* data, uint32_t rowPitch) {
@@ -653,13 +659,13 @@ namespace dy::Backends
         return true;
     }
 
-    void D3D12Device::DestroyBuffer(RHI::IBuffer* buffer) { delete buffer; }
+    void D3D12Device::DestroyBuffer(RHI::IBuffer* buffer) { if(TrackBufferDestroyed(buffer)) delete buffer; }
 
     void D3D12Device::DestroyTexture(RHI::ITexture* texture) {
-        delete texture;
+		if(TrackTextureDestroyed(texture)) delete texture;
     }
 
-    void D3D12Device::DestroyPipelineState(RHI::IPipelineState* pipeline) { delete pipeline; }
+    void D3D12Device::DestroyPipelineState(RHI::IPipelineState* pipeline) { if(TrackPipelineDestroyed(pipeline)) delete pipeline; }
 
     RHI::ITexture* D3D12Device::GetBackBuffer() { 
         return m_internal->backBufferTextures[m_internal->frameIndex]; 

@@ -7,8 +7,10 @@
 #define DY_PROFILE_CPU_ZONE() ZoneScoped
 #define DY_PROFILE_CPU_ZONE_NAMED(name) ZoneScopedN(name)
 #define DY_PROFILE_GPU_MILLISECONDS(name, value) TracyPlot(name, value)
+#define DY_PROFILE_RESOURCE_COUNT(name, value) TracyPlot(name, static_cast<double>(value))
 #else
 #define DY_PROFILE_CPU_ZONE() ((void)0)
 #define DY_PROFILE_CPU_ZONE_NAMED(name) ((void)sizeof(name))
 #define DY_PROFILE_GPU_MILLISECONDS(name, value) do { (void)sizeof(name); (void)(value); } while(false)
+#define DY_PROFILE_RESOURCE_COUNT(name, value) do { (void)sizeof(name); (void)(value); } while(false)
 #endif

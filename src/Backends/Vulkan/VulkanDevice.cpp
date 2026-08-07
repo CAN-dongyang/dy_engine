@@ -729,12 +729,16 @@ void VulkanDevice::Present()
 
 dy::RHI::IBuffer* VulkanDevice::CreateBuffer(const dy::RHI::BufferDesc& desc)
 {
-	return m_impl->CreateBuffer(desc);
+	dy::RHI::IBuffer* buffer = m_impl->CreateBuffer(desc);
+	TrackBufferCreated(buffer);
+	return buffer;
 }
 
 dy::RHI::ITexture* VulkanDevice::CreateTexture(const dy::RHI::TextureDesc& desc)
 {
-	return m_impl->CreateTexture(desc);
+	dy::RHI::ITexture* texture = m_impl->CreateTexture(desc);
+	TrackTextureCreated(texture);
+	return texture;
 }
 
 bool VulkanDevice::UpdateTexture(dy::RHI::ITexture* texture, const void* rgba8Pixels, uint32_t rowPitch)
@@ -744,7 +748,9 @@ bool VulkanDevice::UpdateTexture(dy::RHI::ITexture* texture, const void* rgba8Pi
 
 dy::RHI::IPipelineState* VulkanDevice::CreateGraphicsPipeline(const dy::RHI::GraphicsPipelineDesc& desc)
 {
-	return m_impl->CreateGraphicsPipeline(desc);
+	dy::RHI::IPipelineState* pipeline = m_impl->CreateGraphicsPipeline(desc);
+	TrackPipelineCreated(pipeline);
+	return pipeline;
 }
 
 dy::RHI::DescriptorIndex VulkanDevice::AllocateDescriptorSlot()
@@ -759,17 +765,17 @@ void VulkanDevice::UpdateDescriptorSlot(dy::RHI::DescriptorIndex index, dy::RHI:
 
 void VulkanDevice::DestroyBuffer(dy::RHI::IBuffer* buffer)
 {
-	m_impl->DestroyBuffer(buffer);
+	if(TrackBufferDestroyed(buffer)) m_impl->DestroyBuffer(buffer);
 }
 
 void VulkanDevice::DestroyTexture(dy::RHI::ITexture* texture)
 {
-	m_impl->DestroyTexture(texture);
+	if(TrackTextureDestroyed(texture)) m_impl->DestroyTexture(texture);
 }
 
 void VulkanDevice::DestroyPipelineState(dy::RHI::IPipelineState* pipeline)
 {
-	m_impl->DestroyPipelineState(pipeline);
+	if(TrackPipelineDestroyed(pipeline)) m_impl->DestroyPipelineState(pipeline);
 }
 
 dy::RHI::ITexture* VulkanDevice::GetBackBuffer()

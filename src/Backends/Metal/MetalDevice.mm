@@ -114,22 +114,28 @@ namespace dy::Backends
 
     RHI::IBuffer* MetalDevice::CreateBuffer(const RHI::BufferDesc& desc)
     {
-        return new MetalBuffer(desc, (__bridge void*)m_impl->device);
+		RHI::IBuffer* buffer = new MetalBuffer(desc, (__bridge void*)m_impl->device);
+		TrackBufferCreated(buffer);
+		return buffer;
     }
 
     RHI::ITexture* MetalDevice::CreateTexture(const RHI::TextureDesc& desc)
     {
-        return new MetalTexture(desc, (__bridge void*)m_impl->device);
+		RHI::ITexture* texture = new MetalTexture(desc, (__bridge void*)m_impl->device);
+		TrackTextureCreated(texture);
+		return texture;
     }
 
     RHI::IPipelineState* MetalDevice::CreateGraphicsPipeline(const RHI::GraphicsPipelineDesc& desc)
     {
-        return new MetalPipeline(desc, (__bridge void*)m_impl->device);
+		RHI::IPipelineState* pipeline = new MetalPipeline(desc, (__bridge void*)m_impl->device);
+		TrackPipelineCreated(pipeline);
+		return pipeline;
     }
 
-    void MetalDevice::DestroyBuffer(RHI::IBuffer* buffer)                 { delete buffer; }
-    void MetalDevice::DestroyTexture(RHI::ITexture* texture)              { delete texture; }
-    void MetalDevice::DestroyPipelineState(RHI::IPipelineState* pipeline) { delete pipeline; }
+    void MetalDevice::DestroyBuffer(RHI::IBuffer* buffer)                 { if(TrackBufferDestroyed(buffer)) delete buffer; }
+    void MetalDevice::DestroyTexture(RHI::ITexture* texture)              { if(TrackTextureDestroyed(texture)) delete texture; }
+    void MetalDevice::DestroyPipelineState(RHI::IPipelineState* pipeline) { if(TrackPipelineDestroyed(pipeline)) delete pipeline; }
 
     bool MetalDevice::UpdateTexture(RHI::ITexture* texture, const void* data, uint32_t rowPitch)
     {

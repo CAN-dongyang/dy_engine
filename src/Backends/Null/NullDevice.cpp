@@ -174,12 +174,16 @@ namespace dy::Backends
 
 	RHI::IBuffer* NullDevice::CreateBuffer(const RHI::BufferDesc& desc)
 	{
-		return new NullBuffer(desc);
+		RHI::IBuffer* buffer = new NullBuffer(desc);
+		TrackBufferCreated(buffer);
+		return buffer;
 	}
 
 	RHI::ITexture* NullDevice::CreateTexture(const RHI::TextureDesc& desc)
 	{
-		return new NullTexture(desc);
+		RHI::ITexture* texture = new NullTexture(desc);
+		TrackTextureCreated(texture);
+		return texture;
 	}
 
 	bool NullDevice::UpdateTexture(RHI::ITexture*, const void*, uint32_t)
@@ -189,7 +193,9 @@ namespace dy::Backends
 
 	RHI::IPipelineState* NullDevice::CreateGraphicsPipeline(const RHI::GraphicsPipelineDesc& desc)
 	{
-		return new NullPipelineState(desc);
+		RHI::IPipelineState* pipeline = new NullPipelineState(desc);
+		TrackPipelineCreated(pipeline);
+		return pipeline;
 	}
 
 	RHI::DescriptorIndex NullDevice::AllocateDescriptorSlot()
@@ -202,17 +208,17 @@ namespace dy::Backends
 
 	void NullDevice::DestroyBuffer(RHI::IBuffer* buffer)
 	{
-		delete buffer;
+		if(TrackBufferDestroyed(buffer)) delete buffer;
 	}
 
 	void NullDevice::DestroyTexture(RHI::ITexture* texture)
 	{
-		delete texture;
+		if(TrackTextureDestroyed(texture)) delete texture;
 	}
 
 	void NullDevice::DestroyPipelineState(RHI::IPipelineState* pipeline)
 	{
-		delete pipeline;
+		if(TrackPipelineDestroyed(pipeline)) delete pipeline;
 	}
 
 	RHI::ITexture* NullDevice::GetBackBuffer()
