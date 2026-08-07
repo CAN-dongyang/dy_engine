@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Graphics/Scene.h"
+#include "Platform/Profiler.h"
 #include "RHI/IBuffer.h"
 #include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
@@ -402,6 +403,7 @@ namespace
 
 	void PerDrawBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::PrepareResources");
 		const uint32_t meshCount = scene.GetMeshCount();
 		if(m_meshStates.size() < meshCount) m_meshStates.resize(meshCount);
 
@@ -439,6 +441,7 @@ namespace
 
 	void PerDrawBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
 
 		const RendererDesc& config = *context.config;
@@ -483,6 +486,7 @@ namespace
 
 	void PerDrawBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordMainPass");
 		RHI::ICommandList* commandList = device->AcquireCommandList();
 		RHI::ITexture* backBuffer = device->GetBackBuffer();
 		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
@@ -585,11 +589,13 @@ namespace
 
 	void BatchedBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::PrepareResources");
 		BuildBatchedGeometry(scene, device, m_vertexBuffer, m_vertexBufferBytes, m_indexBuffer, m_indexBufferBytes, m_meshRanges);
 	}
 
 	void BatchedBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
 
 		const RendererDesc& config = *context.config;
@@ -635,6 +641,7 @@ namespace
 
 	void BatchedBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordMainPass");
 		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
 
 		RHI::ICommandList* commandList = device->AcquireCommandList();
@@ -720,12 +727,14 @@ namespace
 
 	void BindlessPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("Bindless::PrepareResources");
 		(void)context;
 		BuildBatchedGeometry(scene, device, m_vertexBuffer, m_vertexBufferBytes, m_indexBuffer, m_indexBufferBytes, m_meshRanges);
 	}
 
 	void BindlessPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("Bindless::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
 
 		const RendererDesc& config = *context.config;
@@ -771,6 +780,7 @@ namespace
 
 	void BindlessPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("Bindless::RecordMainPass");
 		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
 
 		RHI::ICommandList* commandList = device->AcquireCommandList();

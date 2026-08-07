@@ -46,6 +46,11 @@ function(dy_example_shaders target)
                 COMMAND ${CMAKE_COMMAND} -E copy "${src_dir}/mesh_shadow_vs.hlsl" "${out_dir}/mesh_shadow_vs.hlsl"
                 VERBATIM)
         endif()
+    elseif(USE_METAL AND EXISTS "${src_dir}/mesh_vs.metal" AND EXISTS "${src_dir}/mesh_ps.metal")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy "${src_dir}/mesh_vs.metal" "${out_dir}/mesh_vs.metal"
+            COMMAND ${CMAKE_COMMAND} -E copy "${src_dir}/mesh_ps.metal" "${out_dir}/mesh_ps.metal"
+            VERBATIM)
     else()
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy "${src_dir}/mesh_vs.glsl" "${out_dir}/mesh_vs.glsl"

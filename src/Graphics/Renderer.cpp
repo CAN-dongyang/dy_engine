@@ -13,6 +13,7 @@
 #include "Graphics/Scene.h"
 #include "Graphics/ShadowMath.h"
 #include "Math/Math.h"
+#include "Platform/Profiler.h"
 #include "RHI/IBuffer.h"
 #include "RHI/IDevice.h"
 #include "RHI/IPipelineState.h"
@@ -133,6 +134,7 @@ Renderer::Renderer(const RendererDesc& desc)
 
 bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Initialize");
 	static_assert(Layout::kPushConstantRangeSize == sizeof(Layout::DrawConstants), "Renderer draw constants size mismatch.");
 
 	if(device == nullptr) return false;
@@ -244,6 +246,7 @@ void Renderer::SetEnvironmentLight(const EnvironmentDesc& environment)
 
 void Renderer::Shutdown(RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Shutdown");
 	if(device == nullptr) return;
 
 	if(m_path != nullptr) m_path->Shutdown(device);
@@ -291,6 +294,7 @@ void Renderer::Shutdown(RHI::IDevice* device)
 
 void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Render");
 	if(device == nullptr || m_path == nullptr) return;
 
 	// 공유 준비: 텍스처 GPU 레지던시 + 머티리얼 상태(모든 전략 공통).
@@ -342,6 +346,7 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::BuildPipelineStates");
 	// 렌더 타깃 포맷은 실제 백버퍼에서 파생한다(단일 진실원). 이래야 PSO 가 실제 타깃과
 	// 항상 일치하고, 백엔드별 스왑체인 포맷 불일치(감마 차이)가 생기지 않는다.
 	if(RHI::ITexture* backBuffer = device->GetBackBuffer())
@@ -509,6 +514,7 @@ void Renderer::EnsureMaterialStateCapacity(std::size_t materialCount)
 
 void Renderer::UpdateMaterialStates(const Scene& scene)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateMaterialStates");
 	const uint32_t materialCount = scene.GetMaterialCount();
 	for(uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex)
 	{
@@ -543,6 +549,7 @@ void Renderer::UpdateMaterialStates(const Scene& scene)
 
 void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateLightingBuffer");
 	if(m_lightingBuffer == nullptr)
 	{
 		m_lightingBuffer = device->CreateBuffer(RHI::BufferDesc{
@@ -608,6 +615,7 @@ void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 
 void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateShadowBuffer");
 	if(m_shadowMatrixBuffer == nullptr)
 	{
 		m_shadowMatrixBuffer = device->CreateBuffer(RHI::BufferDesc{

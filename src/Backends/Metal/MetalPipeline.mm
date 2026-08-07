@@ -30,8 +30,15 @@ namespace dy::Backends
         const char* vertSrc = static_cast<const char*>(desc.vertexShader);
         const char* fragSrc = static_cast<const char*>(desc.pixelShader);
 
-        NSString* vertString = [NSString stringWithUTF8String:vertSrc];
-        NSString* fragString = [NSString stringWithUTF8String:fragSrc];
+        NSString* vertString = [[NSString alloc] initWithBytes:vertSrc
+                                                        length:desc.vertexShaderSize
+                                                      encoding:NSUTF8StringEncoding];
+        NSString* fragString = [[NSString alloc] initWithBytes:fragSrc
+                                                        length:desc.pixelShaderSize
+                                                      encoding:NSUTF8StringEncoding];
+
+        if(!vertString) { NSLog(@"Vertex shader source is not valid UTF-8"); return; }
+        if(!fragString) { NSLog(@"Fragment shader source is not valid UTF-8"); return; }
 
         id<MTLLibrary> vertLib = [mtlDevice newLibraryWithSource:vertString
                                                          options:nil
