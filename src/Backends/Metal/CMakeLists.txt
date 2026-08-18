@@ -2,7 +2,7 @@
 # message(STATUS "[${PROJECT_NAME}] Find Metal Package...")
 
 # ===== ===== Backend Target ===== =====
-set(BACKEND_NAME "Backend_Metal")
+set(BACKEND_NAME "dy_backend_metal")
 
 add_library(${BACKEND_NAME} OBJECT
     MetalDevice.mm
@@ -26,7 +26,7 @@ set_source_files_properties(
 )
 
 target_link_libraries(${BACKEND_NAME} PRIVATE
-    Engine_Options
+    dy_engine_options
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

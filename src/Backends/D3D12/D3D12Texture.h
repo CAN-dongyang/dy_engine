@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/Texture.h"
+#include "RHI/ResourceState.h"
 
 #include <cstddef>
 #include <cstdint>

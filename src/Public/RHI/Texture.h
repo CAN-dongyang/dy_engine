@@ -1,8 +1,6 @@
 #pragma once
 #include <cstdint>
 #include "Format.h"
-#include "ResourceHandles.h"
-#include "ResourceState.h"
 
 namespace dy::RHI
 {
@@ -14,7 +12,36 @@ namespace dy::RHI
 		DepthStencil		= 1 << 2,
 		Storage				= 1 << 3,
 	};
-	DY_RHI_ENABLE_ENUM_FLAGS(TextureUsage)
+
+	inline constexpr TextureUsage operator|(TextureUsage left, TextureUsage right)
+	{
+		return static_cast<TextureUsage>(static_cast<uint32_t>(left) | static_cast<uint32_t>(right));
+	}
+
+	inline constexpr TextureUsage operator&(TextureUsage left, TextureUsage right)
+	{
+		return static_cast<TextureUsage>(static_cast<uint32_t>(left) & static_cast<uint32_t>(right));
+	}
+
+	inline constexpr TextureUsage& operator|=(TextureUsage& left, TextureUsage right)
+	{
+		left = left | right;
+		return left;
+	}
+
+	inline constexpr TextureUsage& operator&=(TextureUsage& left, TextureUsage right)
+	{
+		left = left & right;
+		return left;
+	}
+
+	struct TextureSubresourceRange
+	{
+		uint32_t firstMipLevel = 0;
+		uint32_t mipLevelCount = 0;
+		uint32_t firstArrayLayer = 0;
+		uint32_t arrayLayerCount = 0;
+	};
 
 	// Descriptor for creating a texture
 	struct TextureDesc {

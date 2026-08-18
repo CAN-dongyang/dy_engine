@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/Buffer.h"
+#include "RHI/ResourceState.h"
 #include "RHI/Texture.h"
 #include "VulkanContext.h"
 

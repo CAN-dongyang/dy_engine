@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "RHI/Texture.h"
+#include "RHI/ResourceState.h"
 
 namespace dy::Backends
 {

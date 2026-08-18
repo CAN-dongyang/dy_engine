@@ -12,7 +12,9 @@
 
 #include "Graphics/Private/DrawData.h"
 #include "Graphics/Private/RendererShaderLayout.h"
+#include "Graphics/Private/StockShaderAssets.h"
 #include "Graphics/Private/TextureCache.h"
+#include "Graphics/Camera.h"
 #include "Graphics/Scene.h"
 #include "Math/Math.h"
 #include "RHI/Buffer.h"
@@ -21,16 +23,6 @@
 #include "RHI/Pipeline.h"
 #include "RHI/Shader.h"
 #include "RHI/Texture.h"
-
-#if defined(ENABLE_METAL)
-#include "StockMetalLibrary.h"
-#else
-#include "StockFragmentShader.h"
-#include "StockFragmentShaderNoShadows.h"
-#include "StockShadowVertexShader.h"
-#include "StockVertexShader.h"
-#include "StockVertexShaderNoShadows.h"
-#endif
 
 using namespace dy;
 using namespace dy::Graphics;
@@ -297,48 +289,25 @@ bool Renderer::Impl::Initialize()
 	if(backBuffer->GetDesc().format != swapchainDesc.format)
 		return false;
 
-#if defined(ENABLE_METAL)
-	const void* vertexBinary = dy::Graphics::Private::kStockMetalLibrary;
-	const std::size_t vertexBinarySize = dy::Graphics::Private::kStockMetalLibrarySize;
-	const void* fragmentBinary = vertexBinary;
-	const std::size_t fragmentBinarySize = vertexBinarySize;
-	const void* shadowBinary = vertexBinary;
-	const std::size_t shadowBinarySize = vertexBinarySize;
-	const char* vertexEntry = config.enableShadows
-		? "vertexShader"
-		: "vertexShaderNoShadows";
-	const char* fragmentEntry = config.enableShadows
-		? "fragmentShader"
-		: "fragmentShaderNoShadows";
-	const char* shadowEntry = "shadowVertexShader";
-#else
-	const void* vertexBinary = config.enableShadows
-		? dy::Graphics::Private::kStockVertexShader
-		: dy::Graphics::Private::kStockVertexShaderNoShadows;
-	const std::size_t vertexBinarySize = config.enableShadows
-		? dy::Graphics::Private::kStockVertexShaderSize
-		: dy::Graphics::Private::kStockVertexShaderNoShadowsSize;
-	const void* fragmentBinary = config.enableShadows
-		? dy::Graphics::Private::kStockFragmentShader
-		: dy::Graphics::Private::kStockFragmentShaderNoShadows;
-	const std::size_t fragmentBinarySize = config.enableShadows
-		? dy::Graphics::Private::kStockFragmentShaderSize
-		: dy::Graphics::Private::kStockFragmentShaderNoShadowsSize;
-	const void* shadowBinary = dy::Graphics::Private::kStockShadowVertexShader;
-	const std::size_t shadowBinarySize = dy::Graphics::Private::kStockShadowVertexShaderSize;
-	const char* vertexEntry = "main";
-	const char* fragmentEntry = "main";
-	const char* shadowEntry = "main";
-#endif
+	const Private::StockShaderAssets stockShaders = Private::GetStockShaderAssets(config.enableShadows);
 
 	vertexShader = nativeDevice->CreateShader(RHI::ShaderDesc{
-		RHI::ShaderStage::Vertex, vertexEntry, vertexBinary, vertexBinarySize });
+		RHI::ShaderStage::Vertex,
+		stockShaders.vertex.entryPoint,
+		stockShaders.vertex.binary,
+		stockShaders.vertex.binarySize });
 	fragmentShader = nativeDevice->CreateShader(RHI::ShaderDesc{
-		RHI::ShaderStage::Fragment, fragmentEntry, fragmentBinary, fragmentBinarySize });
+		RHI::ShaderStage::Fragment,
+		stockShaders.fragment.entryPoint,
+		stockShaders.fragment.binary,
+		stockShaders.fragment.binarySize });
 	if(config.enableShadows)
 	{
 		shadowVertexShader = nativeDevice->CreateShader(RHI::ShaderDesc{
-			RHI::ShaderStage::Vertex, shadowEntry, shadowBinary, shadowBinarySize });
+			RHI::ShaderStage::Vertex,
+			stockShaders.shadowVertex.entryPoint,
+			stockShaders.shadowVertex.binary,
+			stockShaders.shadowVertex.binarySize });
 	}
 	if(vertexShader == nullptr || fragmentShader == nullptr ||
 		(config.enableShadows && shadowVertexShader == nullptr)) return false;

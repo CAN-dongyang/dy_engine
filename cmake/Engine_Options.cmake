@@ -1,42 +1,34 @@
-# ===== ===== Language (legacy) ===== =====
-# set(CMAKE_CXX_STANDARD 20)
-# set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 # abstract target for engine options
-add_library(Engine_Options INTERFACE)
+add_library(dy_engine_options INTERFACE)
 
 # ===== ===== Language ===== =====
-target_compile_features(Engine_Options INTERFACE cxx_std_17)
+target_compile_features(dy_engine_options INTERFACE cxx_std_17)
 
-# ===== ===== Include ===== =====
-target_include_directories(Engine_Options INTERFACE
-	${CMAKE_SOURCE_DIR}/src
-)
-
-# ===== ===== Compile definition ===== =====
-target_compile_definitions(Engine_Options INTERFACE
-	ENGINE_VERSION="1.0.0"
-	GLFW_INCLUDE_NONE
+# dy_engine 소비자와 독립 object Backend가 공유하는 유일한 공개 include root.
+target_include_directories(dy_engine_options INTERFACE
+	${PROJECT_SOURCE_DIR}/src/Public
 )
 
 # ===== ===== SIMD ===== =====
 option(DY_ENABLE_SIMD "Enable dy::Math SIMD code paths when supported by the target CPU." ON)
 
 if(DY_ENABLE_SIMD)
-	target_compile_definitions(Engine_Options INTERFACE DY_SIMD_ENABLED=1)
+	target_compile_definitions(dy_engine_options INTERFACE DY_SIMD_ENABLED=1)
 
 	if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86|i[3-6]86)$")
 		if(MSVC)
-			target_compile_options(Engine_Options INTERFACE /arch:SSE2)
+			target_compile_options(dy_engine_options INTERFACE /arch:SSE2)
 		elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-			target_compile_options(Engine_Options INTERFACE -msse2)
+			target_compile_options(dy_engine_options INTERFACE -msse2)
 		endif()
 	endif()
 endif()
 
 # ===== ===== Compile options ===== =====
 if(MSVC)
-	target_compile_options(Engine_Options INTERFACE /W4 /utf-8 /wd4201)
+	# Public headers are UTF-8 without BOM, so their input encoding is part of the consumer contract.
+	target_compile_options(dy_engine_options INTERFACE /utf-8)
+	target_compile_options(${PROJECT_NAME} PRIVATE /W4 /wd4201)
 else()
-	target_compile_options(Engine_Options INTERFACE -Wall -Wextra)
+	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
 endif()

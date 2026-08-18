@@ -6,8 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "ResourceHandles.h"
-
 namespace dy::RHI
 {
 	enum class ShaderStage : uint8_t

@@ -1,8 +1,8 @@
 #pragma once
+
 #include <cstdint>
 
 #include "Math/Math.h"
-#include "Graphics/Mesh.h"
 
 namespace dy::Graphics
 {
@@ -33,13 +33,6 @@ namespace dy::Graphics
 		float diffuseIntensity = 1.0f;
 		Math::float3 specularColor = Math::float3(1.0f, 1.0f, 1.0f);
 		float specularIntensity = 1.0f;
-	};
-
-	struct Camera
-	{
-		Math::float4x4 view = Math::float4x4::Identity();
-		Math::float4x4 projection = Math::float4x4::Identity();
-		Math::float3 position = Math::float3(0.0f, 0.0f, 0.0f);
 	};
 
 	struct ShadowMapDesc

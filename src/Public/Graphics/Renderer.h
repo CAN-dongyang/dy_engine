@@ -2,10 +2,11 @@
 
 #include <memory>
 
-#include "Graphics/RendererConfig.h"
+#include "Graphics/RendererDesc.h"
 
 namespace dy::Graphics
 {
+	struct Camera;
 	class Scene;
 
 	class Renderer

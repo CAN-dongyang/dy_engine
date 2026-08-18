@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "Core/Types.h"
+#include "Graphics/Texture.h"
 #include "RHI/ResourceHandles.h"
 #include "RHI/ResourceState.h"
 

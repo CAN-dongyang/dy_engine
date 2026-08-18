@@ -24,9 +24,9 @@
 
 DirectX 12, Vulkan, Metal은 드라이버가 감추던 리소스 상태, 동기화, 파이프라인 구성을 애플리케이션이 직접 설계하도록 요구합니다. 이 방식은 런타임 유효성 검사와 암묵적 상태 추적 비용을 줄일 수 있지만, 두꺼운 범용 래퍼나 구형 상태 기계식 추상화를 얹으면 명시적 API의 장점이 상위 렌더링 단계까지 충분히 드러나지 않습니다.
 
-`dy_engine`은 편의 기능을 하나의 큰 객체 계층에 모으기보다 데이터 흐름과 제어 책임에 따라 계층을 나눕니다. Foundation은 캐시 친화적 데이터 처리와 실행 기반을 맡고, RHI는 Vulkan, D3D12, Metal의 명시적 자원 모델을 얇게 노출합니다. 그 위에서 렌더링 경로는 패스, 리소스 수명, 바인딩 방식을 정리하고, Render Front-End는 사용자가 장면과 재질을 다루는 진입점이 됩니다.
+`dy_engine`은 두 개의 사용 경로를 둡니다. 일반적인 장면은 `Graphics::Renderer`와 `Graphics::Scene`으로 구성하고, 그 추상화가 맞지 않는 렌더링은 `RHI::IDevice`와 `RHI::ICommandList`로 직접 작성합니다. Backends는 이 RHI 계약을 D3D12, Vulkan, Metal 또는 Null로 번역합니다.
 
-사용자는 기본 렌더러로 장면을 구성할 수도 있고, 필요한 경우 `RendererDesc`, 상위 렌더러의 저수준 API, `IDevice`와 `ICommandList` 순으로 더 낮은 계층까지 내려가 제어할 수 있습니다. 목표는 모든 API를 포괄하는 범용성이 아니라, 최신 명시적 API의 자원 모델과 커맨드 기록 방식을 가리지 않는 점진적 제어 구조입니다.
+목표는 UI·네트워크·패키지 시스템을 갖춘 범용 게임 엔진이 아니라, 명시적 그래픽스 API의 자원과 커맨드 모델을 가리지 않으면서 반복 작업만 줄이는 작은 렌더링 프레임워크입니다. 현재 01~07 예제는 Graphics 경로를 검증하며, Direct RHI 경로는 전용 예제로 계약을 확정해야 하는 상태입니다.
 
 ## 프로젝트 자료
 
@@ -44,45 +44,40 @@ DirectX 12, Vulkan, Metal은 드라이버가 감추던 리소스 상태, 동기�
 
 ## 주요 기능
 
-- 얇은 RHI: `IDevice`, `ICommandList`, `IBuffer`, `ITexture`, `IPipelineState`로 상위 렌더러와 백엔드 구현을 분리합니다.
+- 얇은 RHI: `IDevice`, `ICommandList`와 `Buffer`·`Texture`·`Pipeline` handle로 상위 렌더러와 백엔드 구현을 분리합니다.
 - 백엔드 선택: CMake 옵션으로 Vulkan, Direct3D 12, Metal, Null 백엔드를 선택합니다.
-- 점진적 제어: 기본 렌더러 설정에서 시작해 필요하면 렌더러 저수준 API나 RHI 직접 사용으로 내려갈 수 있습니다.
-- 렌더 패킷 구성: 장면, 메시, 재질, 조명 데이터를 정리하고 draw 제출 흐름을 예제 단위로 검증합니다.
-- 리소스 바인딩 전략 비교: `07_RenderPath`에서 per-draw, batched, bindless binding mode를 실행 인자로 전환합니다.
+- 두 사용 경로: 기본 Graphics 프런트엔드와 직접 RHI 작성을 분리합니다.
+- 렌더 데이터 구성: 장면, 메시, 재질, 텍스처, 조명 데이터를 GPU 제출 형태로 변환합니다.
 - 명시적 그래픽스 API 실험: descriptor heap/table, push constant, pipeline state, command list 제출 흐름을 백엔드별로 연결합니다.
 - 모델과 텍스처 로딩: OBJ, glTF, FBX 모델을 렌더링 경로에 올리고 재질/텍스처 연결을 검증합니다.
-- 조명과 그림자: 대표 광원 데이터, shadow pass, main pass 연계를 통해 그림자 맵 기반 렌더링을 처리합니다.
+- 조명과 그림자: 현재 stock Renderer는 첫 방향광 또는 첫 점광원을 사용하며, 첫 방향광에 단일 shadow map을 지원합니다.
 - 데이터 지향 수학 경로: `DY_ENABLE_SIMD`로 SIMD 행렬 연산 경로를 켜고 끌 수 있습니다.
 
 ## 설계 구조
 
 ```text
-Application / Examples
-└─ 사용자 코드와 샘플 진입점
+examples/
+└─ 공개 API만 사용하는 실행 가능한 계약
 
-Layer 4. Render Front-End
-└─ Renderer · Scene/Material · Flattened Render Queue
+src/Public/
+├─ Graphics/   Renderer · Scene · Camera · Entity · Mesh · Material · Texture · Light · Model
+├─ RHI/        Device · command · resource · binding · pipeline · rendering 계약
+├─ Math/       CPU 수학 타입과 연산
+└─ Platform/   예제용 Window
 
-Layer 3. Render Path / Render Graph
-└─ Pass 선언 · 리소스 수명/배리어 · transient 리소스 흐름
-
-Layer 2. RHI
-└─ IDevice · ICommandList · Resources · Backends(Vulkan/D3D12/Metal/Null)
-
-Layer 1. Foundation
-└─ Math(SIMD) · Platform · Core · Job/Task 기반
-
-Cross-Cutting
-└─ frame indexing · double/triple buffering · thread-local command recording
+src/Graphics/  stock Renderer · GPU 제출 데이터 · model/texture 변환 구현
+src/RHI/       선택한 Backend의 Device 생성 진입점
+src/Backends/  D3D12 · Vulkan · Metal · Null 번역 구현
+src/Platform/  Window 구현
 ```
 
 ### RHI 계층
 
-`RHI::IDevice`, `ICommandList`, `IBuffer`, `ITexture`, `IPipelineState`를 기준으로 상위 renderer가 특정 그래픽 API에 직접 의존하지 않도록 구성합니다.
+`RHI::IDevice`가 자원을 생성·파괴하고 frame 제출을 소유하며, `ICommandList`가 barrier, rendering, binding, draw command를 기록합니다. 자원 handle은 `ResourceHandles.h`에 모은 Backend 객체의 비소유 pointer이며, 반드시 생성한 Device의 `Destroy*`로 파괴해야 합니다. `ResourceSet`보다 참조하는 pipeline·buffer·texture가 오래 살아 있어야 합니다.
 
 ### Graphics 계층
 
-`Renderer`, `Scene`, `Mesh`, `RenderPath`를 중심으로 모델, 재질, 조명, 렌더링 경로를 관리합니다. 상위 계층은 RHI 인터페이스를 통해 리소스와 command list를 사용하고, API별 호출은 직접 다루지 않습니다.
+`Renderer`, `Scene`, `Camera`, `Mesh`, `Material`, `Texture`, `Light`, `Model`을 사용자 인터페이스로 둡니다. `EntityID` 같은 ID와 `Transform`은 Graphics 장면에서만 의미가 있으므로 별도 Core 계층을 만들지 않습니다. importer의 중간 데이터, stock shader 포장, GPU 제출용 구조체는 `src/Graphics/Private`에 숨깁니다.
 
 ### API 구현 계층
 
@@ -128,13 +123,11 @@ sudo apt-get install -y libwayland-dev wayland-protocols libxkbcommon-dev
 
 | 옵션 | 기본값 | 설명 |
 | --- | --- | --- |
-| `USE_VULKAN` | `OFF` | Vulkan 사용 |
-| `USE_D3D12` | `OFF` | Direct3D 12 사용. Windows 전용 |
-| `USE_METAL` | `OFF` | Metal 사용. macOS 전용 |
+| `DY_BACKEND` | `Null` | `Null`, `D3D12`, `Vulkan`, `Metal` 중 하나 |
 | `DY_ENABLE_SIMD` | `ON` | 지원 CPU에서 SIMD 수학 경로 사용 |
 | `DY_LINUX_WINDOW_SYSTEM` | `AUTO` | Linux GLFW window system 선택. `AUTO`, `X11`, `WAYLAND` |
 
-그래픽스 백엔드 옵션은 한 번에 하나만 켜는 것을 기준으로 합니다. 백엔드를 바꿔 실험할 때는 빌드 폴더를 분리하면 CMake cache 충돌을 피할 수 있습니다.
+백엔드를 바꿔 실험할 때는 빌드 폴더를 분리하면 CMake cache 충돌을 피할 수 있습니다.
 
 ## 빌드 방법
 
@@ -143,42 +136,42 @@ sudo apt-get install -y libwayland-dev wayland-protocols libxkbcommon-dev
 ### Vulkan
 
 ```bash
-cmake -S . -B build/vulkan -DUSE_VULKAN=ON
+cmake -S . -B build/vulkan -DDY_BACKEND=Vulkan
 cmake --build build/vulkan --config Release
 ```
 
 ### DirectX 12
 
 ```powershell
-cmake -S . -B build/d3d12 -DUSE_D3D12=ON
+cmake -S . -B build/d3d12 -DDY_BACKEND=D3D12
 cmake --build build/d3d12 --config Release
 ```
 
 ### Metal
 
 ```bash
-cmake -S . -B build/metal -DUSE_METAL=ON
+cmake -S . -B build/metal -DDY_BACKEND=Metal
 cmake --build build/metal --config Release
 ```
 
 ### Null
 
 ```bash
-cmake -S . -B build/null
+cmake -S . -B build/null -DDY_BACKEND=Null
 cmake --build build/null --config Release
 ```
 
 SIMD 비교가 필요하면 같은 백엔드 설정에 `-DDY_ENABLE_SIMD=OFF`를 추가하고 별도 빌드 폴더를 사용합니다.
 
 ```bash
-cmake -S . -B build/vulkan-nosimd -DUSE_VULKAN=ON -DDY_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build/vulkan-nosimd -DDY_BACKEND=Vulkan -DDY_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build/vulkan-nosimd --config Release
 ```
 
 아래는 generator 지정 예시입니다.
 
 ```bash
-cmake -S . -B build/directx -DUSE_D3D12=ON -G "Visual Studio <your_version>" -A "<x64|Win32>"
+cmake -S . -B build/directx -DDY_BACKEND=D3D12 -G "Visual Studio <your_version>" -A "<x64|Win32>"
 cmake --build build/directx --config Release
 ```
 
@@ -210,18 +203,4 @@ cmake --build build/vulkan --config Release --target Cube
 | Textured Cube | `TexturedCube` | `examples/04_TexturedCube` |
 | Load Model | `LoadModel` | `examples/05_LoadModel` |
 | Shadow Cube | `ShadowCube` | `examples/06_ShadowCube` |
-| Render Path | `07_RenderPath` | `examples/07_RenderPath` |
-
-`07_RenderPath`는 binding mode와 instance count를 실행 인자로 받을 수 있습니다.
-
-```powershell
-.\07_RenderPath.exe --per-draw --count=10000
-.\07_RenderPath.exe --batched --count=10000
-.\07_RenderPath.exe --bindless --count=10000
-```
-
-```bash
-./07_RenderPath --per-draw --count=10000
-./07_RenderPath --batched --count=10000
-./07_RenderPath --bindless --count=10000
-```
+| Renderer Stress | `07_RendererStress` | `examples/07_RendererStress` |

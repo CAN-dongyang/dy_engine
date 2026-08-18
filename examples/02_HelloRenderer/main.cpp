@@ -3,6 +3,10 @@
 #include <stdexcept>
 
 #include "Platform/Window.h"
+#include "Graphics/Camera.h"
+#include "Graphics/Entity.h"
+#include "Graphics/Light.h"
+#include "Graphics/Material.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 #include "Graphics/Mesh.h"
@@ -22,7 +26,7 @@ int main()
 		camera.position = Math::float3(0.0f, 0.0f, 2.2f);
 
 		Graphics::Scene scene;
-		[[maybe_unused]] const DirectionalLightID lightId =
+		[[maybe_unused]] const Graphics::DirectionalLightID lightId =
 			scene.CreateDirectionalLight(Graphics::DirectionalLight{});
 
 		Graphics::MeshData triangleMesh = {};
@@ -35,9 +39,9 @@ int main()
 
 		Graphics::MaterialDesc triangleMaterial = {};
 
-		const MeshID meshId = scene.CreateMesh(triangleMesh);
-		const MaterialID materialId = scene.CreateMaterial(triangleMaterial);
-		[[maybe_unused]] const EntityID entity = scene.CreateEntity(meshId, materialId);
+		const Graphics::MeshID meshId = scene.CreateMesh(triangleMesh);
+		const Graphics::MaterialID materialId = scene.CreateMaterial(triangleMaterial);
+		[[maybe_unused]] const Graphics::EntityID entity = scene.CreateEntity(meshId, materialId);
 
 		while(window.IsRunning())
 		{

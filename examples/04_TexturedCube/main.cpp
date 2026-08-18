@@ -5,9 +5,14 @@
 #include <string>
 
 #include "Platform/Window.h"
+#include "Graphics/Camera.h"
+#include "Graphics/Entity.h"
+#include "Graphics/Light.h"
+#include "Graphics/Material.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 #include "Graphics/Mesh.h"
+#include "Graphics/Texture.h"
 #include "Math/Math.h"
 
 using namespace dy;
@@ -27,21 +32,21 @@ int main()
 		camera.projection = Math::PerspectiveRH_ZO(1.0472f, 1280.0f / 720.0f, 0.1f, 100.0f);
 
 		Graphics::Scene scene;
-		const MeshID cube = scene.CreateMesh(Graphics::CreateCubeMesh(1.0f));
+		const Graphics::MeshID cube = scene.CreateMesh(Graphics::CreateCubeMesh(1.0f));
 
 		// Scene 는 경로만 보관; 실제 디코드/업로드는 렌더러가 수행한다.
-		const TextureID texture = scene.CreateTexture(std::string("Textures/cube.png"));
+		const Graphics::TextureID texture = scene.CreateTexture(std::string("Textures/cube.png"));
 		Graphics::MaterialDesc material = {};
 		material.baseColorTexture = texture;
-		const MaterialID materialId = scene.CreateMaterial(material);
-		[[maybe_unused]] const EntityID entity = scene.CreateEntity(cube, materialId);
+		const Graphics::MaterialID materialId = scene.CreateMaterial(material);
+		[[maybe_unused]] const Graphics::EntityID entity = scene.CreateEntity(cube, materialId);
 
 		Graphics::DirectionalLight light = {};
 		light.direction = Math::float3(0.4f, 0.5f, 0.8f);
 		light.color = Math::float3(1.0f, 0.96f, 0.9f);
 		light.intensity = 3.0f;
 		light.castShadow = false;
-		[[maybe_unused]] const DirectionalLightID lightId = scene.CreateDirectionalLight(light);
+		[[maybe_unused]] const Graphics::DirectionalLightID lightId = scene.CreateDirectionalLight(light);
 
 		while(window.IsRunning())
 		{

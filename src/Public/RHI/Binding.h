@@ -2,10 +2,9 @@
 
 #include <cstdint>
 #include <limits>
-#include <vector>
 
 #include "ResourceHandles.h"
-#include "ResourceState.h"
+#include "Texture.h"
 
 namespace dy::RHI
 {
@@ -85,15 +84,6 @@ namespace dy::RHI
 		SamplerDesc staticSampler = {};
 	};
 
-	struct PipelineLayoutDesc
-	{
-		const ResourceBindingLayout* bindings = nullptr;
-		uint32_t bindingCount = 0;
-		uint32_t inlineConstantSize = 0;
-		ShaderStageFlags inlineConstantStages = ShaderStageFlags::None;
-		uint32_t inlineConstantBinding = 0;
-	};
-
 	struct ResourceBinding
 	{
 		uint32_t binding = 0;
@@ -103,35 +93,5 @@ namespace dy::RHI
 		uint32_t offset = 0;
 		uint32_t size = 0;
 		TextureSubresourceRange subresources = {};
-	};
-
-	struct ResourceSetDesc
-	{
-		PipelineHandle pipeline = nullptr;
-		const ResourceBinding* bindings = nullptr;
-		uint32_t bindingCount = 0;
-	};
-
-	class ResourceSet
-	{
-	public:
-		[[nodiscard]] PipelineHandle GetPipeline() const { return m_pipeline; }
-		[[nodiscard]] const ResourceBinding* GetBindings() const { return m_bindings.data(); }
-		[[nodiscard]] uint32_t GetBindingCount() const { return static_cast<uint32_t>(m_bindings.size()); }
-
-	protected:
-		virtual ~ResourceSet() = default;
-		explicit ResourceSet(const ResourceSetDesc& desc)
-			: m_pipeline(desc.pipeline)
-		{
-			if(desc.bindings != nullptr && desc.bindingCount != 0)
-			{
-				m_bindings.assign(desc.bindings, desc.bindings + desc.bindingCount);
-			}
-		}
-
-	private:
-		PipelineHandle m_pipeline = nullptr;
-		std::vector<ResourceBinding> m_bindings;
 	};
 }

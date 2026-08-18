@@ -17,8 +17,12 @@
 #include <string>
 #include <vector>
 
-#include "Core/Types.h"
+#include "Graphics/Camera.h"
+#include "Graphics/Entity.h"
+#include "Graphics/Light.h"
+#include "Graphics/Material.h"
 #include "Graphics/Mesh.h"
+#include "Graphics/Model.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 #include "Math/Math.h"
@@ -93,7 +97,7 @@ namespace
 	// 인덱스로부터 결정적으로 산출되는 인스턴스별 애니메이션 파라미터.
 	struct Instance
 	{
-		EntityID entity = EntityID::Invalid;
+		Graphics::EntityID entity = Graphics::EntityID::Invalid;
 		Math::float3 position;
 		Math::float4x4 modelMatrix = Math::float4x4::Identity();
 		float spin = 0.0f;
@@ -138,21 +142,21 @@ int main(int argc, char** argv)
 		if(templateCount == 0u)
 		{
 			// 모델 로드 실패 시 큐브로 폴백(벤치는 계속 동작).
-			const MeshID cube = scene.CreateMesh(Graphics::CreateCubeMesh(1.0f));
+			const Graphics::MeshID cube = scene.CreateMesh(Graphics::CreateCubeMesh(1.0f));
 			Graphics::MaterialDesc mat = {};
 			mat.baseColor = Math::float4(0.8f, 0.4f, 0.3f, 1.0f);
-			const MaterialID matId = scene.CreateMaterial(mat);
+			const Graphics::MaterialID matId = scene.CreateMaterial(mat);
 			(void)scene.CreateEntity(cube, matId);
 		}
 		const uint32_t baseCount = scene.GetEntityCount();
 
 		// 템플릿을 재사용해 targetCount 까지 인스턴스를 채운다(재로딩/메시 중복 없음).
-		std::vector<MeshID> templateMeshes(baseCount);
-		std::vector<MaterialID> templateMaterials(baseCount);
+		std::vector<Graphics::MeshID> templateMeshes(baseCount);
+		std::vector<Graphics::MaterialID> templateMaterials(baseCount);
 		std::vector<Math::float4x4> templateTransforms(baseCount);
 		for(uint32_t i = 0; i < baseCount; ++i)
 		{
-			const EntityID e = static_cast<EntityID>(i);
+			const Graphics::EntityID e = static_cast<Graphics::EntityID>(i);
 			templateMeshes[i] = scene.GetEntityMesh(e);
 			templateMaterials[i] = scene.GetEntityMaterial(e);
 			templateTransforms[i] = scene.GetTransform(e).worldMatrix;
@@ -175,7 +179,7 @@ int main(int argc, char** argv)
 			const uint32_t gy = (i / side) % side;
 			const uint32_t gz = i / (side * side);
 			Instance& inst = instances[i];
-			inst.entity = static_cast<EntityID>(i);
+			inst.entity = static_cast<Graphics::EntityID>(i);
 			inst.modelMatrix = templateTransforms[i % baseCount];
 			inst.position = Math::float3(
 				gridOrigin + static_cast<float>(gx) * spacing,
@@ -204,7 +208,7 @@ int main(int argc, char** argv)
 		light.direction = Math::float3(0.5f, 0.6f, 0.6f);
 		light.intensity = 3.5f;
 		light.castShadow = false;
-		const DirectionalLightID lightId = scene.CreateDirectionalLight(light);
+		const Graphics::DirectionalLightID lightId = scene.CreateDirectionalLight(light);
 
 		// ----- 시작 정보 출력 -----
 		std::cout << "=== RendererStress ===\n"

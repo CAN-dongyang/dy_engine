@@ -17,13 +17,13 @@ jobs:
         include:
           - name: Windows D3D12
             os: windows-latest
-            backend_flag: USE_D3D12
+            backend: D3D12
           - name: Ubuntu Vulkan
             os: ubuntu-latest
-            backend_flag: USE_VULKAN
+            backend: Vulkan
           - name: macOS Metal
             os: macos-latest
-            backend_flag: USE_METAL
+            backend: Metal
 
     steps:
       - name: Checkout
@@ -36,7 +36,7 @@ jobs:
           sudo apt-get install -y libvulkan-dev xorg-dev
 
       - name: Configure
-        run: cmake -S . -B build -D${{ matrix.backend_flag }}=ON -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DDY_BACKEND=${{ matrix.backend }} -DCMAKE_BUILD_TYPE=Release
 
       - name: Build engine library
         run: cmake --build build --config Release --target dy_engine --parallel

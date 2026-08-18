@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "Platform/Window.h"
+#include "Graphics/Camera.h"
+#include "Graphics/Light.h"
+#include "Graphics/Model.h"
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
-#include "Graphics/Mesh.h"
 #include "Math/Math.h"
 
 using namespace dy;
@@ -66,7 +68,7 @@ int main(int argc, char** argv)
 		light.color = Math::float3(1.0f, 0.96f, 0.9f);
 		light.intensity = 3.0f;
 		light.castShadow = false;
-		[[maybe_unused]] const DirectionalLightID lightId = scene.CreateDirectionalLight(light);
+		[[maybe_unused]] const Graphics::DirectionalLightID lightId = scene.CreateDirectionalLight(light);
 
 		const auto startTime = std::chrono::steady_clock::now();
 		while(window.IsRunning())

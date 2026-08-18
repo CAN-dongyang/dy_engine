@@ -1,6 +1,5 @@
 function(dy_setup_example target)
     target_link_libraries(${target} PRIVATE ${PROJECT_NAME})
-    target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src)
     set_property(TARGET ${target} PROPERTY FOLDER ${target})
     set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${target}>")
 endfunction()

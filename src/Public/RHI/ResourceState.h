@@ -20,11 +20,4 @@ namespace dy::RHI
 		Present
 	};
 
-	struct TextureSubresourceRange
-	{
-		uint32_t firstMipLevel = 0;
-		uint32_t mipLevelCount = 0;
-		uint32_t firstArrayLayer = 0;
-		uint32_t arrayLayerCount = 0;
-	};
 }

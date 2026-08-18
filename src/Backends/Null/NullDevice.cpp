@@ -1,4 +1,4 @@
-#include "Backends/Null/NullDevice.h"
+#include "NullDevice.h"
 
 #include "RHI/Buffer.h"
 #include "RHI/ICommandList.h"

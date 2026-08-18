@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "RHI/ResourceSet.h"
+#include "RHI/ResourceState.h"
 
 namespace dy::Backends
 {

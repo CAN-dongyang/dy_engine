@@ -1,12 +1,6 @@
 #pragma once
 #include <cstdint>
 
-#define DY_RHI_ENABLE_ENUM_FLAGS(T) \
-	inline constexpr T operator|(T a, T b) { return static_cast<T>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b)); } \
-	inline constexpr T operator&(T a, T b) { return static_cast<T>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b)); } \
-	inline T& operator|=(T& a, T b) { a = a | b; return a; } \
-	inline T& operator&=(T& a, T b) { a = a & b; return a; }
-
 namespace dy::RHI
 {
 	// Pixel formats for textures and render targets

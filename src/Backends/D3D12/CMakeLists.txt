@@ -2,7 +2,7 @@
 # message(STATUS "[${PROJECT_NAME}] Find DirectX 12...")
 
 # ===== ===== Backend Target ===== =====
-set(BACKEND_NAME "Backend_D3D12")
+set(BACKEND_NAME "dy_backend_d3d12")
 
 add_library(${BACKEND_NAME} OBJECT
 	D3D12Device.cpp
@@ -14,7 +14,7 @@ add_library(${BACKEND_NAME} OBJECT
 )
 
 target_link_libraries(${BACKEND_NAME} PRIVATE
-	Engine_Options
+	dy_engine_options
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE d3d12 dxgi dxguid)

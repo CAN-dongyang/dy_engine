@@ -1,7 +1,5 @@
 #pragma once
 #include <cstdint>
-#include "Format.h"
-#include "ResourceHandles.h"
 #include "ResourceState.h"
 
 namespace dy::RHI
@@ -15,7 +13,28 @@ namespace dy::RHI
 		Storage		= 1 << 3,
 		Indirect	= 1 << 4
 	};
-	DY_RHI_ENABLE_ENUM_FLAGS(BufferUsage)
+
+	inline constexpr BufferUsage operator|(BufferUsage left, BufferUsage right)
+	{
+		return static_cast<BufferUsage>(static_cast<uint32_t>(left) | static_cast<uint32_t>(right));
+	}
+
+	inline constexpr BufferUsage operator&(BufferUsage left, BufferUsage right)
+	{
+		return static_cast<BufferUsage>(static_cast<uint32_t>(left) & static_cast<uint32_t>(right));
+	}
+
+	inline constexpr BufferUsage& operator|=(BufferUsage& left, BufferUsage right)
+	{
+		left = left | right;
+		return left;
+	}
+
+	inline constexpr BufferUsage& operator&=(BufferUsage& left, BufferUsage right)
+	{
+		left = left & right;
+		return left;
+	}
 
 	// Descriptor for creating a hardware buffer
 	struct BufferDesc {

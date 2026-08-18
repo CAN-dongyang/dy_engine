@@ -1,10 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(dy_engine CXX)
 
-# add module path
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+set(DY_BACKEND "Null" CACHE STRING "Graphics backend: Null, D3D12, Vulkan, or Metal")
+set_property(CACHE DY_BACKEND PROPERTY STRINGS Null D3D12 Vulkan Metal)
+string(TOUPPER "${DY_BACKEND}" DY_BACKEND_NORMALIZED)
+if(NOT DY_BACKEND_NORMALIZED MATCHES "^(NULL|D3D12|VULKAN|METAL)$")
+	message(FATAL_ERROR "DY_BACKEND must be Null, D3D12, Vulkan, or Metal")
+endif()
 
-if(USE_METAL AND APPLE)
+# add module path
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+
+if(DY_BACKEND_NORMALIZED STREQUAL "METAL" AND APPLE)
 	enable_language(OBJCXX)
 endif()
 
@@ -13,14 +20,18 @@ add_library(${PROJECT_NAME} STATIC
 	"src/RHI/IDevice.cpp"
 	"src/Graphics/Renderer.cpp"
 	"src/Graphics/Private/DrawData.cpp"
+	"src/Graphics/Private/StockShaderAssets.cpp"
 	"src/Graphics/Private/TextureCache.cpp"
 	"src/Graphics/Mesh.cpp"
+	"src/Graphics/Model.cpp"
 	"src/Platform/Window.cpp"
 )
 
+target_include_directories(${PROJECT_NAME} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
 # global options
 include(Engine_Options)
-target_link_libraries(${PROJECT_NAME} PUBLIC Engine_Options)
+target_link_libraries(${PROJECT_NAME} PUBLIC dy_engine_options)
 
 include(Dependencies)
 include(BuildOptions)

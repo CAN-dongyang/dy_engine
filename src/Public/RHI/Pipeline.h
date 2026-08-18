@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "Binding.h"
 #include "Format.h"
 #include "ResourceHandles.h"
-#include "ResourceSet.h"
 
 namespace dy::RHI
 {
@@ -175,6 +175,15 @@ namespace dy::RHI
 		Format format = Format::Unknown;
 		BlendState blend = {};
 		ColorWriteMask writeMask = ColorWriteMask::None;
+	};
+
+	struct PipelineLayoutDesc
+	{
+		const ResourceBindingLayout* bindings = nullptr;
+		uint32_t bindingCount = 0;
+		uint32_t inlineConstantSize = 0;
+		ShaderStageFlags inlineConstantStages = ShaderStageFlags::None;
+		uint32_t inlineConstantBinding = 0;
 	};
 
 	struct GraphicsPipelineDesc

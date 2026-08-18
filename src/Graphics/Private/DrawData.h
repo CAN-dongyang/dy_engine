@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "Graphics/Mesh.h"
+#include "Graphics/Private/MaterialTexture.h"
+#include "Math/Math.h"
 #include "RHI/ResourceHandles.h"
 #include "RHI/ResourceState.h"
 
