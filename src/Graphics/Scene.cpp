@@ -17,6 +17,22 @@ namespace dy::Graphics
 		{
 			return IsValid(entity) && ToIndex(entity) < entityCount;
 		}
+
+		void ResetAnimatedMorphWeights(
+			const AnimationClip& clip,
+			const std::vector<ModelNode>& nodes,
+			std::vector<std::vector<float>>& morphWeights)
+		{
+			for(const MorphWeightTrack& track : clip.morphTracks)
+			{
+				if(track.nodeIndex >= nodes.size()
+					|| track.nodeIndex >= morphWeights.size()
+					|| track.targetIndex >= morphWeights[track.nodeIndex].size()) continue;
+				const std::vector<float>& bindWeights = nodes[track.nodeIndex].morphWeights;
+				morphWeights[track.nodeIndex][track.targetIndex] =
+					track.targetIndex < bindWeights.size() ? bindWeights[track.targetIndex] : 0.0f;
+			}
+		}
 	}
 
 	ModelInstanceID Scene::CreateModelInstance(ModelInstance instance)
@@ -108,15 +124,7 @@ namespace dy::Graphics
 			if(validClip)
 			{
 				const AnimationClip& clip = clips[instance.playback.clipIndex];
-				for(const MorphWeightTrack& track : clip.morphTracks)
-				{
-					if(track.nodeIndex >= nodes.size()
-						|| track.nodeIndex >= instance.nodeMorphWeights.size()
-						|| track.targetIndex >= instance.nodeMorphWeights[track.nodeIndex].size()) continue;
-					const std::vector<float>& bindWeights = nodes[track.nodeIndex].morphWeights;
-					instance.nodeMorphWeights[track.nodeIndex][track.targetIndex] =
-						track.targetIndex < bindWeights.size() ? bindWeights[track.targetIndex] : 0.0f;
-				}
+				ResetAnimatedMorphWeights(clip, nodes, instance.nodeMorphWeights);
 				const float duration = std::max(clip.duration, 0.0f);
 				if(instance.playback.playing)
 				{
@@ -266,8 +274,11 @@ namespace dy::Graphics
 		if(!ValidInstance(instanceId, m_modelInstances)) return false;
 		ModelInstance& instance = m_modelInstances[ToIndex(instanceId)];
 		const ModelAsset* asset = IsValid(instance.assetId) ? TryGetModelAsset(instance.assetId) : nullptr;
+		const std::vector<ModelNode>& nodes = asset != nullptr ? asset->nodes : instance.nodes;
 		const std::vector<AnimationClip>& clips = asset != nullptr ? asset->animations : instance.clips;
 		if(clipIndex >= clips.size()) return false;
+		if(instance.playback.clipIndex < clips.size())
+			ResetAnimatedMorphWeights(clips[instance.playback.clipIndex], nodes, instance.nodeMorphWeights);
 		instance.playback.clipIndex = clipIndex;
 		instance.playback.time = 0.0f;
 		instance.playback.playing = true;

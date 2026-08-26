@@ -46,6 +46,11 @@ namespace dy::Examples
 			const std::string_view argument = arguments[argumentIndex] != nullptr
 				? std::string_view(arguments[argumentIndex])
 				: std::string_view{};
+			if(argument == "--help")
+			{
+				outOptions.showHelp = true;
+				continue;
+			}
 			if(argument == "--paused")
 			{
 				outOptions.paused = true;
@@ -87,6 +92,18 @@ namespace dy::Examples
 				continue;
 			}
 
+			constexpr std::string_view cameraDistancePrefix = "--camera-distance=";
+			if(argument.rfind(cameraDistancePrefix, 0u) == 0u)
+			{
+				if(!ParseFiniteFloat(argument.substr(cameraDistancePrefix.size()), outOptions.cameraDistance)
+					|| outOptions.cameraDistance <= 0.0f)
+				{
+					outError = "--camera-distance requires a finite positive number";
+					return false;
+				}
+				continue;
+			}
+
 			constexpr std::string_view smokePrefix = "--smoke-seconds=";
 			if(argument.rfind(smokePrefix, 0u) == 0u)
 			{
@@ -111,6 +128,7 @@ namespace dy::Examples
 			}
 			outOptions.modelPath = argument;
 		}
+		if(outOptions.modelPath.empty()) outOptions.modelPath = kDefaultLoadModelPath;
 		return true;
 	}
 }
