@@ -1,7 +1,7 @@
 // 05_LoadModel - load static glTF/FBX/OBJ models through the shared LoadModel API.
-#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -26,6 +26,11 @@
 
 using namespace dy;
 
+static constexpr const char* kUsage =
+	"Usage: LoadModel [model] [--clip=N] [--paused] [--timescale=F] [--loop=0|1] [--camera-distance=F] [--smoke-seconds=F]\n"
+	"Default model: Models/SimpleSkin.gltf\n"
+	"Example: LoadModel \"character.glb\" --clip=1 --timescale=0.8 --loop=1 --camera-distance=3\n";
+
 static const char* ShaderExt()
 {
 #if defined(ENABLE_METAL)
@@ -48,33 +53,36 @@ int main(int argc, char** argv)
 		if(!Examples::ParseLoadModelOptions(argc, argv, options, optionError))
 		{
 			std::cerr << optionError << '\n';
-			std::cerr << "Usage: LoadModel [model] [--clip=N] [--paused] [--timescale=F] [--loop=0|1] [--smoke-seconds=F]\n";
+			std::cerr << kUsage;
 			return -1;
+		}
+		if(options.showHelp)
+		{
+			std::cout << kUsage;
+			return 0;
 		}
 		Platform::Window window(1280, 720, "LoadModel");
 		std::unique_ptr<RHI::IDevice> device(RHI::IDevice::Create(window.GetHandle()));
 		if(!device) return -1;
 
+		const std::filesystem::path executableDirectory =
+			std::filesystem::absolute(argv[0]).parent_path();
+		std::filesystem::path shaderDirectory = DY_SHADER_DIR;
+		if(shaderDirectory.is_relative()) shaderDirectory = executableDirectory / shaderDirectory;
 		const std::string ext = ShaderExt();
-		const std::string vsPath = std::string(DY_SHADER_DIR) + "/mesh_vs" + ext;
-		const std::string psPath = std::string(DY_SHADER_DIR) + "/mesh_ps" + ext;
-#if defined(ENABLE_VULKAN)
-		const std::string computeSkinningPath = std::string(DY_SHADER_DIR) + "/mesh_skinning_cs.spv";
-#endif
+		const std::string vsPath = (shaderDirectory / ("mesh_vs" + ext)).lexically_normal().string();
+		const std::string psPath = (shaderDirectory / ("mesh_ps" + ext)).lexically_normal().string();
 
 		Graphics::Renderer renderer;
 		Graphics::RendererDesc cfg = {};
 		cfg.vertexShaderPath = vsPath.c_str();
 		cfg.pixelShaderPath = psPath.c_str();
-#if defined(ENABLE_VULKAN)
-		cfg.skinningExecutionMode = Graphics::SkinningExecutionMode::ComputePreSkin;
-		cfg.computeSkinningShaderPath = computeSkinningPath.c_str();
-#endif
 		if(!renderer.Initialize(device.get(), cfg)) return -1;
 
 		Graphics::CameraDesc camera = {};
-		camera.eye = Math::float3(3.0f, 3.0f, 2.0f);
 		camera.target = Math::float3(0.0f, 0.0f, 0.5f);
+		const float cameraHeight = options.cameraDistance * (4.0f / 9.0f);
+		camera.eye = Math::float3(camera.target.x + options.cameraDistance, camera.target.y, camera.target.z + cameraHeight);
 		camera.aspect = 1280.0f / 720.0f;
 		camera.nearPlane = 0.05f;
 		camera.farPlane = 200.0f;
@@ -82,7 +90,6 @@ int main(int argc, char** argv)
 
 		Graphics::Scene scene;
 
-		bool loadedAny = false;
 		std::vector<ModelInstanceID> modelInstances;
 		auto addModel = [&scene, &modelInstances](const Graphics::ModelSceneDesc& desc)
 		{
@@ -91,38 +98,23 @@ int main(int argc, char** argv)
 			if(loaded && IsValid(instanceId)) modelInstances.push_back(instanceId);
 			return loaded;
 		};
-		if(!options.modelPath.empty())
+		std::filesystem::path modelPath = options.modelPath;
+		if(options.modelPath == Examples::kDefaultLoadModelPath)
+			modelPath = executableDirectory / modelPath;
+		modelPath = modelPath.lexically_normal();
+		std::cout << "Loading model: " << modelPath.string() << '\n';
+		Graphics::ModelSceneDesc desc = {};
+		desc.path = modelPath.string();
+		if(!addModel(desc))
 		{
-			Graphics::ModelSceneDesc desc = {};
-			desc.path = options.modelPath;
-			loadedAny = addModel(desc);
+			std::cerr << "Failed to load model: " << modelPath.string() << '\n';
+			return -1;
 		}
-		else
-		{
-			const std::vector<const char*> models = {
-				"Models/Duck/glTF/Duck.gltf",
-				"Models/Avocado/glTF/Avocado.gltf",
-				"Models/BoomBox/glTF/BoomBox.gltf",
-				"Models/DamagedHelmet/glTF/DamagedHelmet.gltf",
-				"Models/WaterBottle/glTF/WaterBottle.gltf",
-				"Models/Lowpoly_tree/Lowpoly_tree.obj",
-				"Models/shiba/scene.FBX",
-			};
-			const float spacing = 2.3f;
-			const int columnCount = 4;
-			for(size_t i = 0; i < models.size(); ++i)
-			{
-				const int column = static_cast<int>(i % columnCount);
-				const int row = static_cast<int>(i / columnCount);
-				const float x = (static_cast<float>(column) - 0.5f * static_cast<float>(columnCount - 1)) * spacing;
-				const float y = (0.5f - static_cast<float>(row)) * spacing;
-				Graphics::ModelSceneDesc desc = {};
-				desc.path = models[i];
-				desc.position = Math::float3(x, y, 0.5f);
-				loadedAny |= addModel(desc);
-			}
-		}
-		if(!loadedAny) return -1;
+		std::cout << "Playback settings: clip=" << options.clipIndex
+			<< " timescale=" << options.timeScale
+			<< " loop=" << (options.loop ? 1 : 0)
+			<< " paused=" << (options.paused ? 1 : 0)
+			<< " camera-distance=" << options.cameraDistance << '\n';
 		Examples::LoadModelPlaybackResult playbackResult;
 		std::string playbackError;
 		if(!Examples::ConfigureLoadModelAnimations(
@@ -148,6 +140,7 @@ int main(int argc, char** argv)
 
 		const auto startTime = std::chrono::steady_clock::now();
 		auto previousFrame = startTime;
+		bool animationUpdateFailed = false;
 		while(window.IsRunning())
 		{
 			window.PollEvents();
@@ -158,9 +151,18 @@ int main(int argc, char** argv)
 
 			// 나열된 모델 줄을 중심으로 공전(반경은 줄 길이를 담을 정도).
 			const float a = t * 0.4f;
-			camera.eye = Math::float3(camera.target.x + 9.0f * std::cos(a), camera.target.y + 9.0f * std::sin(a), camera.target.z + 4.0f);
+			camera.eye = Math::float3(
+				camera.target.x + options.cameraDistance * std::cos(a),
+				camera.target.y + options.cameraDistance * std::sin(a),
+				camera.target.z + cameraHeight);
 			renderer.SetCamera(camera);
-			scene.UpdateAnimations(deltaSeconds);
+			const Graphics::AnimationUpdateReport animationReport = scene.UpdateAnimations(deltaSeconds);
+			if(!animationReport.Succeeded())
+			{
+				std::cerr << "Animation update failed with " << animationReport.failures.size() << " error(s).\n";
+				animationUpdateFailed = true;
+				break;
+			}
 
 			device->BeginFrame();
 			renderer.Render(scene, device.get());
@@ -186,6 +188,7 @@ int main(int argc, char** argv)
 		if(validationVuidCount != 0u) return -4;
 		if(deviceLost) return -4;
 		#endif
+		if(animationUpdateFailed) return -5;
 		return 0;
 	}
 	catch(const std::exception& exception)
