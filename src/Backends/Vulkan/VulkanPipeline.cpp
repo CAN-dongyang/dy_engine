@@ -36,7 +36,6 @@ namespace
 void VulkanPipeline::Initialize(
 	const VulkanContext& context,
 	VkRenderPass renderPass,
-	VkExtent2D,
 	VkDescriptorSetLayout descriptorSetLayout,
 	const dy::RHI::GraphicsPipelineDesc& desc,
 	uint32_t pushConstantSize,

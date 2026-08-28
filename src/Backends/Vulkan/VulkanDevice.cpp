@@ -32,6 +32,10 @@ namespace {
 	constexpr const char* kValidationLayerName = "VK_LAYER_KHRONOS_validation";
 	constexpr const uint32_t kFallbackTextureWidth = 2;
 	constexpr const uint32_t kFallbackTextureHeight = 2;
+	constexpr std::array<unsigned char, 16> kFallbackTexturePixels = {
+		255, 255, 255, 255, 64, 64, 64, 255,
+		64, 64, 64, 255, 255, 255, 255, 255
+	};
 
 	struct DrawMetadataPushConstants
 	{
@@ -39,31 +43,6 @@ namespace {
 		int32_t vertexOffset = 0;
 		uint32_t firstVertex = 0;
 		uint32_t padding = 0;
-	};
-
-	enum class VulkanBufferKind // 불칸 사용 버퍼 종류
-	{
-		Vertex,
-		Index,
-		Constant,
-		Storage,
-		Indirect
-	};
-
-	struct VulkanBufferKindInfo
-	{
-		VulkanBufferKind kind;
-		dy::RHI::BufferUsage usage;
-		VkBufferUsageFlags vkUsage;
-		const char* name;
-	};
-
-	constexpr std::array<VulkanBufferKindInfo, 5> kVulkanBufferKinds = {
-		VulkanBufferKindInfo{ VulkanBufferKind::Vertex, dy::RHI::BufferUsage::Vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, "Vertex" },
-		VulkanBufferKindInfo{ VulkanBufferKind::Index, dy::RHI::BufferUsage::Index, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, "Index" },
-		VulkanBufferKindInfo{ VulkanBufferKind::Constant, dy::RHI::BufferUsage::Constant, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, "Constant" },
-		VulkanBufferKindInfo{ VulkanBufferKind::Storage, dy::RHI::BufferUsage::Storage, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "Storage" },
-		VulkanBufferKindInfo{ VulkanBufferKind::Indirect, dy::RHI::BufferUsage::Indirect, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, "Indirect" }
 	};
 
 	bool IsValidationEnabled() {
@@ -186,7 +165,7 @@ namespace {
 	{
 	public:
 		explicit VulkanTexture(const dy::RHI::TextureDesc& desc)
-			: dy::RHI::ITexture(desc), m_width(desc.width), m_height(desc.height), m_format(desc.format)
+			: dy::RHI::ITexture(desc)
 		{
 		}
 
@@ -203,21 +182,18 @@ namespace {
 		{
 			Cleanup();
 			m_device = context.device;
-			m_width = desc.width;
-			m_height = desc.height;
-			m_format = desc.format;
 			SetDesc(desc);
 			m_vkFormat = formatOverride != VK_FORMAT_UNDEFINED ? formatOverride : ToVkFormat(desc.format);
-			m_aspectMask = GetImageAspectMask(desc.format, desc.usage);
+			const VkImageAspectFlags aspectMask = GetImageAspectMask(desc.format, desc.usage);
 			m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-			if (m_width == 0 || m_height == 0 || m_vkFormat == VK_FORMAT_UNDEFINED) return false;
+			if (desc.width == 0 || desc.height == 0 || m_vkFormat == VK_FORMAT_UNDEFINED) return false;
 
 			try {
 				VulkanResources::CreateImage(
 					context,
-					m_width,
-					m_height,
+					desc.width,
+					desc.height,
 					m_vkFormat,
 					VK_IMAGE_TILING_OPTIMAL,
 					ToVkImageUsage(desc.usage) | extraUsage,
@@ -225,7 +201,7 @@ namespace {
 					m_image,
 					m_memory);
 
-				m_imageView = VulkanResources::CreateImageView(m_device, m_image, m_vkFormat, m_aspectMask);
+				m_imageView = VulkanResources::CreateImageView(m_device, m_image, m_vkFormat, aspectMask);
 			} catch (const std::exception& e) {
 				SDL_Log("Vulkan texture creation failed: %s", e.what());
 				Cleanup();
@@ -235,15 +211,8 @@ namespace {
 			return true;
 		}
 
-		void UpdateMetadata(uint32_t width, uint32_t height, dy::RHI::Format format)
+		void UpdateMetadata(const dy::RHI::TextureDesc& desc)
 		{
-			m_width = width;
-			m_height = height;
-			m_format = format;
-			dy::RHI::TextureDesc desc = GetDesc();
-			desc.width = width;
-			desc.height = height;
-			desc.format = format;
 			SetDesc(desc);
 		}
 
@@ -293,9 +262,9 @@ namespace {
 				memcpy(data, pixels, static_cast<size_t>(size));
 				vkUnmapMemory(context.device, stagingMemory);
 
-				VulkanResources::TransitionImageLayout(context, commandPool, m_image, m_vkFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+				VulkanResources::TransitionImageLayout(context, commandPool, m_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 				VulkanResources::CopyBufferToImage(context, commandPool, staging, m_image, width, height);
-				VulkanResources::TransitionImageLayout(context, commandPool, m_image, m_vkFormat, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				VulkanResources::TransitionImageLayout(context, commandPool, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 				m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 				vkDestroyBuffer(context.device, staging, nullptr);
@@ -348,11 +317,7 @@ namespace {
 		VkImageView m_imageView = VK_NULL_HANDLE;
 		VkSampler m_sampler = VK_NULL_HANDLE;
 		VkFormat m_vkFormat = VK_FORMAT_UNDEFINED;
-		VkImageAspectFlags m_aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		VkImageLayout m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		uint32_t m_width = 0;
-		uint32_t m_height = 0;
-		dy::RHI::Format m_format = dy::RHI::Format::Unknown;
 	};
 
 	class VulkanPipelineState final : public dy::RHI::IPipelineState
@@ -361,7 +326,6 @@ namespace {
 		VulkanPipelineState(
 			const VulkanContext& context,
 			VkRenderPass renderPass,
-			VkExtent2D extent,
 			VkDescriptorSetLayout descriptorSetLayout,
 			VkDescriptorSetLayout bindlessDescriptorSetLayout,
 			const dy::RHI::GraphicsPipelineDesc& desc,
@@ -373,7 +337,7 @@ namespace {
 		{
 			CopyPipelineDesc(desc);
 			m_pipelineCache.reserve(4);
-			if (GetPipelineForRenderPass(context, renderPass, extent, descriptorSetLayout, bindlessDescriptorSetLayout) == nullptr) {
+			if (GetPipelineForRenderPass(context, renderPass, descriptorSetLayout, bindlessDescriptorSetLayout) == nullptr) {
 				throw std::runtime_error("failed to create graphics pipeline");
 			}
 		}
@@ -389,7 +353,6 @@ namespace {
 		const VulkanPipeline* GetPipelineForRenderPass(
 			const VulkanContext& context,
 			VkRenderPass renderPass,
-			VkExtent2D extent,
 			VkDescriptorSetLayout descriptorSetLayout,
 			VkDescriptorSetLayout bindlessDescriptorSetLayout) const
 		{
@@ -400,7 +363,7 @@ namespace {
 			try {
 				PipelineCacheEntry entry = {};
 				entry.renderPass = renderPass;
-				entry.pipeline.Initialize(context, renderPass, extent, descriptorSetLayout, m_desc, m_pushConstantSize, bindlessDescriptorSetLayout);
+				entry.pipeline.Initialize(context, renderPass, descriptorSetLayout, m_desc, m_pushConstantSize, bindlessDescriptorSetLayout);
 				m_pipelineCache.push_back(std::move(entry));
 				return &m_pipelineCache.back().pipeline;
 			} catch (const std::exception& e) {
@@ -470,9 +433,11 @@ namespace {
 	VkBufferUsageFlags ToVkBufferUsage(dy::RHI::BufferUsage usage)
 	{
 		VkBufferUsageFlags flags = 0;
-		for (const VulkanBufferKindInfo& kind : kVulkanBufferKinds) {
-			if ((usage & kind.usage) != dy::RHI::BufferUsage::None) flags |= kind.vkUsage;
-		}
+		if ((usage & dy::RHI::BufferUsage::Vertex) != dy::RHI::BufferUsage::None) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		if ((usage & dy::RHI::BufferUsage::Index) != dy::RHI::BufferUsage::None) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		if ((usage & dy::RHI::BufferUsage::Constant) != dy::RHI::BufferUsage::None) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		if ((usage & dy::RHI::BufferUsage::Storage) != dy::RHI::BufferUsage::None) flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		if ((usage & dy::RHI::BufferUsage::Indirect) != dy::RHI::BufferUsage::None) flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 		if (flags == 0) return static_cast<VkBufferUsageFlags>(VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 		return flags;
 	}
@@ -585,7 +550,6 @@ private:
 	void DestroyRenderTargetCache();
 	bool UpdateDrawDescriptorSets(const VulkanCommandList& commandList);
 	bool UpdateDrawDescriptorSet(const VulkanCommandList::DrawCall& drawCall, uint32_t drawIndex);
-	bool InitializeBindlessDescriptorSet();
 	void UpdateBackBufferMetadata();
 	VkFormat FindDepthFormat() const;
 	bool IsDepthFormatSupported(VkFormat format) const;
@@ -641,8 +605,6 @@ private:
 	uint32_t m_maxDrawsPerFrame = dy::RHI::DeviceDesc{}.maxDrawsPerFrame;
 	uint32_t m_maxBindlessTextures = dy::RHI::DeviceDesc{}.maxBindlessTextures;
 	uint32_t m_defaultShadowMapResolution = dy::RHI::DeviceDesc{}.defaultShadowMapResolution;
-	uint32_t m_fallbackTextureWidth = kFallbackTextureWidth;
-	uint32_t m_fallbackTextureHeight = kFallbackTextureHeight;
 	uint64_t m_frameAcquireTimeoutNanoseconds = dy::RHI::DeviceDesc{}.frameAcquireTimeoutNanoseconds;
 	dy::RHI::ShaderLayoutDesc m_shaderLayout = {};
 	uint32_t m_currentFrameIndex = 0;
@@ -764,8 +726,6 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 	m_maxBindlessTextures = desc.maxBindlessTextures;
 	m_defaultShadowMapResolution = desc.defaultShadowMapResolution;
 	m_shadowMapResolution = m_defaultShadowMapResolution;
-	m_fallbackTextureWidth = kFallbackTextureWidth;
-	m_fallbackTextureHeight = kFallbackTextureHeight;
 	m_frameAcquireTimeoutNanoseconds = desc.frameAcquireTimeoutNanoseconds;
 	m_shaderLayout = desc.shaderLayout;
 
@@ -852,7 +812,6 @@ dy::RHI::IPipelineState* VulkanDevice::Impl::CreateGraphicsPipeline(const dy::RH
 		VulkanPipelineState* pipelineState = new VulkanPipelineState(
 			m_context,
 			m_mainRenderPass,
-			m_swapchain.GetExtent(),
 			m_descriptorSetLayout,
 			desc.enableBindlessTextures ? m_bindlessDescriptorSetLayout : VK_NULL_HANDLE,
 			desc,
@@ -1278,7 +1237,6 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	VkPipeline currentPipeline = VK_NULL_HANDLE;
-	VkPipelineLayout currentPipelineLayout = VK_NULL_HANDLE;
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 	VkDescriptorSet currentBindlessDescriptorSet = VK_NULL_HANDLE;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
@@ -1289,7 +1247,6 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 		const VulkanPipeline* pipeline = pipelineState->GetPipelineForRenderPass(
 			m_context,
 			renderPass,
-			renderExtent,
 			m_descriptorSetLayout,
 			usesBindlessTextures ? m_bindlessDescriptorSetLayout : VK_NULL_HANDLE);
 		if (pipeline == nullptr) continue;
@@ -1297,7 +1254,6 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 		if (currentPipeline != pipeline->GetPipeline()) {
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->GetPipeline());
 			currentPipeline = pipeline->GetPipeline();
-			currentPipelineLayout = pipeline->GetLayout();
 			currentDescriptorSet = VK_NULL_HANDLE;
 			currentBindlessDescriptorSet = VK_NULL_HANDLE;
 		}
@@ -1306,13 +1262,13 @@ void VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 		const uint32_t descriptorIndex = m_currentFrameIndex * m_maxDrawsPerFrame + descriptorSlot;
 		if (descriptorIndex < m_descriptorSets.size()) {
 			VkDescriptorSet descriptorSet = m_descriptorSets[descriptorIndex];
-			if (descriptorSet != currentDescriptorSet || pipeline->GetLayout() != currentPipelineLayout) {
+			if (descriptorSet != currentDescriptorSet) {
 				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
 				currentDescriptorSet = descriptorSet;
 			}
 		}
 		if (usesBindlessTextures && m_bindlessDescriptorSet != VK_NULL_HANDLE) {
-			if (m_bindlessDescriptorSet != currentBindlessDescriptorSet || pipeline->GetLayout() != currentPipelineLayout) {
+			if (m_bindlessDescriptorSet != currentBindlessDescriptorSet) {
 				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->GetLayout(), 1, 1, &m_bindlessDescriptorSet, 0, nullptr);
 				currentBindlessDescriptorSet = m_bindlessDescriptorSet;
 			}
@@ -1726,24 +1682,9 @@ bool VulkanDevice::Impl::CreateSyncObjects() {
 }
 
 bool VulkanDevice::Impl::CreateFallbackTexture() {
-	const int w = static_cast<int>(m_fallbackTextureWidth);
-	const int h = static_cast<int>(m_fallbackTextureHeight);
-	std::vector<unsigned char> fallbackPixels(static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
-	for (int y = 0; y < h; ++y) {
-		for (int x = 0; x < w; ++x) {
-			const bool bright = ((x + y) & 1) == 0;
-			const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 4u;
-			fallbackPixels[offset + 0u] = bright ? 255 : 64;
-			fallbackPixels[offset + 1u] = bright ? 255 : 64;
-			fallbackPixels[offset + 2u] = bright ? 255 : 64;
-			fallbackPixels[offset + 3u] = 255;
-		}
-	}
-	const unsigned char* pixels = fallbackPixels.data();
-
 	dy::RHI::TextureDesc desc{};
-	desc.width = static_cast<uint32_t>(w);
-	desc.height = static_cast<uint32_t>(h);
+	desc.width = kFallbackTextureWidth;
+	desc.height = kFallbackTextureHeight;
 	desc.depthOrArraySize = 1;
 	desc.mipLevels = 1;
 	desc.format = dy::RHI::Format::R8G8B8A8_UNORM;
@@ -1753,7 +1694,7 @@ bool VulkanDevice::Impl::CreateFallbackTexture() {
 	const bool created =
 		texture->Initialize(m_context, desc, VK_FORMAT_R8G8B8A8_SRGB) &&
 		texture->CreateDefaultSampler() &&
-		texture->UploadRGBA8(m_context, m_commandPool, pixels, desc.width, desc.height);
+		texture->UploadRGBA8(m_context, m_commandPool, kFallbackTexturePixels.data(), desc.width, desc.height);
 
 	if (!created) return false;
 
@@ -1882,10 +1823,6 @@ bool VulkanDevice::Impl::CreateBindlessDescriptorSet() {
 	alloc.pSetLayouts = &m_bindlessDescriptorSetLayout;
 	if (vkAllocateDescriptorSets(m_context.device, &alloc, &m_bindlessDescriptorSet) != VK_SUCCESS) return false;
 
-	return InitializeBindlessDescriptorSet();
-}
-
-bool VulkanDevice::Impl::InitializeBindlessDescriptorSet() {
 	const VulkanTexture* fallbackTexture = static_cast<const VulkanTexture*>(m_fallbackTexture);
 	if (fallbackTexture == nullptr || fallbackTexture->GetImageView() == VK_NULL_HANDLE || fallbackTexture->GetSampler() == VK_NULL_HANDLE) {
 		return false;
@@ -2355,7 +2292,6 @@ void VulkanDevice::Impl::DestroyDeviceResources() {
 	m_commandList = nullptr;
 
 	if (m_context.device != VK_NULL_HANDLE) {
-		vkDeviceWaitIdle(m_context.device);
 		for (dy::RHI::IBuffer* buffer : m_ownedBuffers) delete buffer;
 		m_ownedBuffers.clear();
 		DestroyShadowResources();
@@ -2389,7 +2325,7 @@ void VulkanDevice::Impl::UpdateBackBufferMetadata() {
 		return;
 	}
 
-	static_cast<VulkanTexture*>(m_backBuffer)->UpdateMetadata(desc.width, desc.height, desc.format);
+	static_cast<VulkanTexture*>(m_backBuffer)->UpdateMetadata(desc);
 }
 
 VkFormat VulkanDevice::Impl::FindDepthFormat() const {

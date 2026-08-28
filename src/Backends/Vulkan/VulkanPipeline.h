@@ -10,7 +10,6 @@ public:
     void Initialize(
         const VulkanContext& context,
         VkRenderPass renderPass,
-        VkExtent2D extent,
         VkDescriptorSetLayout descriptorSetLayout,
         const dy::RHI::GraphicsPipelineDesc& desc,
         uint32_t pushConstantSize,

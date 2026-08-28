@@ -42,15 +42,6 @@ void VulkanResources::CreateBuffer(const VulkanContext& context, VkDeviceSize si
     vkBindBufferMemory(context.device, buffer, bufferMemory, 0);
 }
 
-void VulkanResources::CopyBuffer(const VulkanContext& context, VkCommandPool commandPool, VkBuffer srcBuffer, 
-                               VkBuffer dstBuffer, VkDeviceSize size) {
-    VkCommandBuffer commandBuffer = BeginSingleTimeCommands(context, commandPool);
-    VkBufferCopy copyRegion{};
-    copyRegion.size = size;
-    vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-    EndSingleTimeCommands(context, commandPool, commandBuffer);
-}
-
 void VulkanResources::CreateImage(const VulkanContext& context, uint32_t width, uint32_t height, VkFormat format, 
                                 VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, 
                                 VkImage& image, VkDeviceMemory& imageMemory) {
@@ -88,9 +79,8 @@ void VulkanResources::CreateImage(const VulkanContext& context, uint32_t width, 
     vkBindImageMemory(context.device, image, imageMemory, 0);
 }
 
-void VulkanResources::TransitionImageLayout(const VulkanContext& context, VkCommandPool commandPool, VkImage image, 
-                                          VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
-    (void)format;
+void VulkanResources::TransitionImageLayout(const VulkanContext& context, VkCommandPool commandPool, VkImage image,
+                                          VkImageLayout oldLayout, VkImageLayout newLayout) {
     VkCommandBuffer commandBuffer = BeginSingleTimeCommands(context, commandPool);
 
     VkImageMemoryBarrier barrier{};
