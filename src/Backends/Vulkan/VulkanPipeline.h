@@ -9,10 +9,10 @@ class VulkanPipeline {
 public:
     void Initialize(
         const VulkanContext& context,
-        VkRenderPass renderPass,
+        VkFormat colorAttachmentFormat,
+        VkFormat depthAttachmentFormat,
         VkDescriptorSetLayout descriptorSetLayout,
         const dy::RHI::GraphicsPipelineDesc& desc,
-        uint32_t pushConstantSize,
         VkDescriptorSetLayout bindlessDescriptorSetLayout = VK_NULL_HANDLE);
     void Cleanup(VkDevice device);
 

@@ -18,10 +18,10 @@ namespace
 		return rasterizer;
 	}
 
-	VkPipelineColorBlendAttachmentState CreateAlphaBlendAttachmentState()
+	VkPipelineColorBlendAttachmentState CreateAlphaBlendAttachmentState(bool blendEnable)
 	{
 		VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-		colorBlendAttachment.blendEnable = VK_TRUE;
+		colorBlendAttachment.blendEnable = blendEnable ? VK_TRUE : VK_FALSE;
 		colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 		colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 		colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -35,10 +35,10 @@ namespace
 
 void VulkanPipeline::Initialize(
 	const VulkanContext& context,
-	VkRenderPass renderPass,
+	VkFormat colorAttachmentFormat,
+	VkFormat depthAttachmentFormat,
 	VkDescriptorSetLayout descriptorSetLayout,
 	const dy::RHI::GraphicsPipelineDesc& desc,
-	uint32_t pushConstantSize,
 	VkDescriptorSetLayout bindlessDescriptorSetLayout)
 {
 	if (desc.vertexShader == nullptr || desc.vertexShaderSize == 0 || desc.pixelShader == nullptr || desc.pixelShaderSize == 0) {
@@ -46,7 +46,13 @@ void VulkanPipeline::Initialize(
 	}
 
 	VkShaderModule vertShaderModule = CreateShaderModule(context.device, desc.vertexShader, desc.vertexShaderSize);
-	VkShaderModule fragShaderModule = CreateShaderModule(context.device, desc.pixelShader, desc.pixelShaderSize);
+	VkShaderModule fragShaderModule = VK_NULL_HANDLE;
+	try {
+		fragShaderModule = CreateShaderModule(context.device, desc.pixelShader, desc.pixelShaderSize);
+	} catch (...) {
+		vkDestroyShaderModule(context.device, vertShaderModule, nullptr);
+		throw;
+	}
 
 	VkPipelineShaderStageCreateInfo shaderStages[2]{};
 	shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -83,7 +89,7 @@ void VulkanPipeline::Initialize(
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-	VkPipelineColorBlendAttachmentState colorBlendAttachment = CreateAlphaBlendAttachmentState();
+	VkPipelineColorBlendAttachmentState colorBlendAttachment = CreateAlphaBlendAttachmentState(desc.blendEnable);
 	VkPipelineColorBlendStateCreateInfo colorBlending{};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlending.attachmentCount = 1;
@@ -106,11 +112,6 @@ void VulkanPipeline::Initialize(
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkPushConstantRange pushConstantRange{};
-	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	pushConstantRange.offset = 0;
-	pushConstantRange.size = pushConstantSize;
-
 	std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = {
 		descriptorSetLayout,
 		bindlessDescriptorSetLayout
@@ -119,8 +120,8 @@ void VulkanPipeline::Initialize(
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutInfo.setLayoutCount = desc.enableBindlessTextures && bindlessDescriptorSetLayout != VK_NULL_HANDLE ? 2u : 1u;
 	pipelineLayoutInfo.pSetLayouts = descriptorSetLayouts.data();
-	pipelineLayoutInfo.pushConstantRangeCount = 1;
-	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+	pipelineLayoutInfo.pushConstantRangeCount = 0;
+	pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
 	if (vkCreatePipelineLayout(context.device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
 		vkDestroyShaderModule(context.device, fragShaderModule, nullptr);
@@ -128,8 +129,15 @@ void VulkanPipeline::Initialize(
 		throw std::runtime_error("failed to create pipeline layout");
 	}
 
+	VkPipelineRenderingCreateInfo renderingInfo{};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachmentFormats = &colorAttachmentFormat;
+	renderingInfo.depthAttachmentFormat = depthAttachmentFormat;
+
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext = &renderingInfo;
 	pipelineInfo.stageCount = 2;
 	pipelineInfo.pStages = shaderStages;
 	pipelineInfo.pVertexInputState = &vertexInputInfo;
@@ -141,12 +149,14 @@ void VulkanPipeline::Initialize(
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.layout = m_pipelineLayout;
-	pipelineInfo.renderPass = renderPass;
+	pipelineInfo.renderPass = VK_NULL_HANDLE;
 	pipelineInfo.subpass = 0;
 
 	if (vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS) {
 		vkDestroyShaderModule(context.device, fragShaderModule, nullptr);
 		vkDestroyShaderModule(context.device, vertShaderModule, nullptr);
+		vkDestroyPipelineLayout(context.device, m_pipelineLayout, nullptr);
+		m_pipelineLayout = VK_NULL_HANDLE;
 		throw std::runtime_error("failed to create graphics pipeline");
 	}
 

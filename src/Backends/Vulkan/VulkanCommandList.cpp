@@ -13,6 +13,7 @@ void VulkanCommandList::Begin()
 	m_renderTargets = {};
 	m_depthStencil = nullptr;
 	m_boundPipeline = nullptr;
+	m_boundComputePipeline = nullptr;
 	m_pendingPushConstantSize = 0;
 	m_pendingGeometry = {};
 	m_pendingConstantBuffers = {};
@@ -21,11 +22,18 @@ void VulkanCommandList::Begin()
 	m_hasPendingViewport = false;
 	m_hasPendingScissor = false;
 	m_drawCalls.clear();
+	m_computeDispatches.clear();
+	m_bufferBarriers.clear();
 }
 
 void VulkanCommandList::BindGraphicsPipeline(dy::RHI::IPipelineState* pipelineState)
 {
 	m_boundPipeline = pipelineState;
+}
+
+void VulkanCommandList::BindComputePipeline(dy::RHI::IPipelineState* pipelineState)
+{
+	m_boundComputePipeline = pipelineState;
 }
 
 void VulkanCommandList::SetInlineConstants(uint32_t size, const void* data)
@@ -130,6 +138,11 @@ void VulkanCommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCou
 	drawCall.constantBuffers = m_pendingConstantBuffers;
 	drawCall.storageBuffers = m_pendingStorageBuffers;
 	drawCall.textures = m_pendingTextures;
+	drawCall.renderTargetCount = m_renderTargetCount;
+	drawCall.renderTargets = m_renderTargets;
+	drawCall.depthStencil = m_depthStencil;
+	drawCall.clearColor = m_clearColor;
+	drawCall.clearDepth = m_clearDepth;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;
 	drawCall.viewport = m_pendingViewport;
@@ -155,6 +168,11 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 	drawCall.constantBuffers = m_pendingConstantBuffers;
 	drawCall.storageBuffers = m_pendingStorageBuffers;
 	drawCall.textures = m_pendingTextures;
+	drawCall.renderTargetCount = m_renderTargetCount;
+	drawCall.renderTargets = m_renderTargets;
+	drawCall.depthStencil = m_depthStencil;
+	drawCall.clearColor = m_clearColor;
+	drawCall.clearDepth = m_clearDepth;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;
 	drawCall.viewport = m_pendingViewport;
@@ -163,6 +181,44 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 		memcpy(drawCall.pushConstants.data(), m_pendingPushConstants.data(), m_pendingPushConstantSize);
 	}
 	m_drawCalls.push_back(drawCall);
+}
+
+void VulkanCommandList::Dispatch(
+	uint32_t threadGroupCountX,
+	uint32_t threadGroupCountY,
+	uint32_t threadGroupCountZ)
+{
+	ComputeDispatch dispatch = {};
+	dispatch.pipelineState = m_boundComputePipeline;
+	dispatch.threadGroupCountX = threadGroupCountX;
+	dispatch.threadGroupCountY = threadGroupCountY;
+	dispatch.threadGroupCountZ = threadGroupCountZ;
+	dispatch.inlineConstantSize = m_pendingPushConstantSize;
+	dispatch.storageBuffers = m_pendingStorageBuffers;
+	if(m_pendingPushConstantSize > 0u)
+	{
+		std::memcpy(
+			dispatch.inlineConstants.data(),
+			m_pendingPushConstants.data(),
+			m_pendingPushConstantSize);
+	}
+	m_computeDispatches.push_back(dispatch);
+}
+
+void VulkanCommandList::BufferMemoryBarrier(
+	dy::RHI::IBuffer* buffer,
+	dy::RHI::BufferAccess sourceAccess,
+	dy::RHI::BufferAccess destinationAccess,
+	uint32_t offset,
+	uint32_t size)
+{
+	if(buffer == nullptr) return;
+	m_bufferBarriers.push_back(BufferBarrier{
+		buffer,
+		sourceAccess,
+		destinationAccess,
+		offset,
+		size });
 }
 
 }
