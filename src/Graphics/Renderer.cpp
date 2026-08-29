@@ -11,11 +11,13 @@
 #include <vector>
 
 #include "Graphics/RenderPath.h"
+#include "Graphics/LightingGpu.h"
 #include "Graphics/Scene.h"
 #include "Graphics/ShadowMath.h"
 #include "Graphics/SkinningPass.h"
 #include "Math/Math.h"
 #include "RHI/IBuffer.h"
+#include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
 #include "RHI/IPipelineState.h"
 #include "RHI/ITexture.h"
@@ -76,16 +78,6 @@ namespace
 #endif
 
 		return vertexShaderPath != nullptr && pixelShaderPath != nullptr && (!config.enableShadows || shadowVertexShaderPath != nullptr);
-	}
-
-	[[nodiscard]] const DirectionalLight* GetPrimaryDirectionalLight(const Scene& scene)
-	{
-		return scene.GetDirectionalLightCount() > 0 ? &scene.GetDirectionalLight(0) : nullptr;
-	}
-
-	[[nodiscard]] const PointLight* GetPrimaryPointLight(const Scene& scene)
-	{
-		return scene.GetPointLightCount() > 0 ? &scene.GetPointLight(0) : nullptr;
 	}
 
 	[[nodiscard]] Math::Bounds3 ComputeShadowBounds(const Scene& scene)
@@ -186,6 +178,14 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 	{
 		m_shadowVertexShaderSource = ReadBinaryFile(shadowVertexShaderPath);
 	}
+	m_toneMapVertexShaderSource.clear();
+	m_toneMapPixelShaderSource.clear();
+	if(m_config.enableHdrRendering)
+	{
+		if(m_config.toneMapVertexShaderPath == nullptr || m_config.toneMapPixelShaderPath == nullptr) return false;
+		m_toneMapVertexShaderSource = ReadBinaryFile(m_config.toneMapVertexShaderPath);
+		m_toneMapPixelShaderSource = ReadBinaryFile(m_config.toneMapPixelShaderPath);
+	}
 	m_computeSkinningShaderSource.clear();
 	const bool computeConfigurationSupported =
 		m_config.bindingMode == RendererBindingMode::PerDrawBind
@@ -220,7 +220,7 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 	BuildPipelineStates(device);
 	BuildRenderPassPlan();
 	m_path = CreateRenderPath(m_config.bindingMode);
-	return m_pipeline != nullptr && m_path != nullptr;
+	return m_pipeline != nullptr && m_path != nullptr && (!m_config.enableHdrRendering || m_toneMapPipeline != nullptr);
 }
 
 void Renderer::SetCamera(const CameraDesc& camera)
@@ -236,7 +236,14 @@ void Renderer::SetCamera(const CameraDesc& camera)
 	}
 
 	m_config.viewProjectionMatrix = proj * view;
+	m_config.cameraViewMatrix = view;
 	m_config.cameraPosition = camera.eye;
+	m_config.cameraForward = Math::NormalizeOr(camera.target - camera.eye, Math::float3(0.0f, 1.0f, 0.0f));
+	m_config.cameraUp = camera.up;
+	m_config.cameraNearPlane = camera.nearPlane;
+	m_config.cameraFarPlane = camera.farPlane;
+	m_config.cameraFovYRadians = camera.fovYRadians;
+	m_config.cameraAspect = camera.aspect;
 }
 
 void Renderer::SetViewProjection(const Math::float4x4& viewProjection)
@@ -285,6 +292,8 @@ void Renderer::Shutdown(RHI::IDevice* device)
 	m_pixelShaderSource.clear();
 	m_shadowVertexShaderSource.clear();
 	m_computeSkinningShaderSource.clear();
+	m_toneMapVertexShaderSource.clear();
+	m_toneMapPixelShaderSource.clear();
 	m_renderPasses.clear();
 
 	if(m_lightingBuffer != nullptr)
@@ -296,6 +305,11 @@ void Renderer::Shutdown(RHI::IDevice* device)
 	{
 		device->DestroyTexture(m_depthStencilTarget);
 		m_depthStencilTarget = nullptr;
+	}
+	if(m_hdrColorTarget != nullptr)
+	{
+		device->DestroyTexture(m_hdrColorTarget);
+		m_hdrColorTarget = nullptr;
 	}
 	if(m_shadowDepthTarget != nullptr)
 	{
@@ -317,6 +331,11 @@ void Renderer::Shutdown(RHI::IDevice* device)
 	{
 		device->DestroyPipelineState(m_skinningPipeline);
 		m_skinningPipeline = nullptr;
+	}
+	if(m_toneMapPipeline != nullptr)
+	{
+		device->DestroyPipelineState(m_toneMapPipeline);
+		m_toneMapPipeline = nullptr;
 	}
 	if(m_pipeline != nullptr)
 	{
@@ -344,6 +363,9 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	context.gpuScene = &m_gpuScene;
 	context.materialStates = &m_materialStates;
 	EnsureDepthStencilTarget(device);
+	EnsureHdrColorTarget(device);
+	context.mainColorTarget = m_config.enableHdrRendering ? m_hdrColorTarget : nullptr;
+	context.deferSubmit = m_config.enableHdrRendering && m_hdrColorTarget != nullptr && m_toneMapPipeline != nullptr;
 	context.depthStencil = m_depthStencilTarget;
 	m_path->PrepareResources(scene, device, context);
 
@@ -381,6 +403,7 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 			m_path->RecordMainPass(scene, device, context);
 		}
 	}
+	if(context.deferSubmit) RecordToneMapPass(device);
 }
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
@@ -404,7 +427,9 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	{
 		if(backBuffer->GetFormat() != RHI::Format::Unknown)
 		{
-			m_config.renderTargetFormat = backBuffer->GetFormat();
+			m_config.renderTargetFormat = m_config.enableHdrRendering
+				? RHI::Format::R16G16B16A16_FLOAT
+				: backBuffer->GetFormat();
 		}
 	}
 
@@ -426,6 +451,21 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	// desc.shaderLayout = m_config.shaderLayout;
 
 	m_pipeline = device->CreateGraphicsPipeline(desc);
+	if(m_config.enableHdrRendering && !m_toneMapVertexShaderSource.empty() && !m_toneMapPixelShaderSource.empty())
+	{
+		RHI::GraphicsPipelineDesc toneMapDesc = {};
+		toneMapDesc.vertexShader = m_toneMapVertexShaderSource.data();
+		toneMapDesc.vertexShaderSize = m_toneMapVertexShaderSource.size();
+		toneMapDesc.pixelShader = m_toneMapPixelShaderSource.data();
+		toneMapDesc.pixelShaderSize = m_toneMapPixelShaderSource.size();
+		toneMapDesc.renderTargetFormat = device->GetBackBuffer() != nullptr
+			? device->GetBackBuffer()->GetFormat()
+			: RHI::Format::R8G8B8A8_UNORM;
+		toneMapDesc.depthStencilFormat = RHI::Format::Unknown;
+		toneMapDesc.depthEnable = false;
+		toneMapDesc.resourceProfile = RHI::GraphicsResourceProfile::PerDrawSkin;
+		m_toneMapPipeline = device->CreateGraphicsPipeline(toneMapDesc);
+	}
 	if(m_activeSkinningExecutionMode == SkinningExecutionMode::ComputePreSkin)
 	{
 		RHI::ComputePipelineDesc computeDesc = {};
@@ -536,6 +576,58 @@ void Renderer::EnsureDepthStencilTarget(RHI::IDevice* device)
 	m_depthStencilTarget = device->CreateTexture(depthDesc);
 }
 
+void Renderer::EnsureHdrColorTarget(RHI::IDevice* device)
+{
+	if(device == nullptr || !m_config.enableHdrRendering)
+	{
+		if(device != nullptr && m_hdrColorTarget != nullptr)
+		{
+			device->DestroyTexture(m_hdrColorTarget);
+			m_hdrColorTarget = nullptr;
+		}
+		return;
+	}
+	RHI::ITexture* backBuffer = device->GetBackBuffer();
+	if(backBuffer == nullptr || backBuffer->GetWidth() == 0u || backBuffer->GetHeight() == 0u) return;
+	const bool recreate = m_hdrColorTarget == nullptr
+		|| m_hdrColorTarget->GetWidth() != backBuffer->GetWidth()
+		|| m_hdrColorTarget->GetHeight() != backBuffer->GetHeight()
+		|| m_hdrColorTarget->GetFormat() != RHI::Format::R16G16B16A16_FLOAT;
+	if(!recreate) return;
+	if(m_hdrColorTarget != nullptr) device->DestroyTexture(m_hdrColorTarget);
+	RHI::TextureDesc hdrDesc = {};
+	hdrDesc.width = backBuffer->GetWidth();
+	hdrDesc.height = backBuffer->GetHeight();
+	hdrDesc.depthOrArraySize = 1u;
+	hdrDesc.mipLevels = 1u;
+	hdrDesc.format = RHI::Format::R16G16B16A16_FLOAT;
+	hdrDesc.usage = RHI::TextureUsage::RenderTarget | RHI::TextureUsage::ShaderResource;
+	m_hdrColorTarget = device->CreateTexture(hdrDesc);
+}
+
+void Renderer::RecordToneMapPass(RHI::IDevice* device)
+{
+	if(device == nullptr || m_hdrColorTarget == nullptr || m_toneMapPipeline == nullptr) return;
+	RHI::ICommandList* commandList = device->AcquireCommandList();
+	RHI::ITexture* backBuffer = device->GetBackBuffer();
+	if(commandList == nullptr || backBuffer == nullptr) return;
+	commandList->SetRenderTargets(1u, &backBuffer, nullptr);
+	commandList->ClearColor(backBuffer, 0.0f, 0.0f, 0.0f, 1.0f);
+	commandList->BindGraphicsPipeline(m_toneMapPipeline);
+	commandList->BindTexture(Layout::kBaseColorTextureBinding, m_hdrColorTarget);
+	Layout::DrawConstants constants = {};
+	constants.baseColor = Math::float4(
+		std::max(m_config.exposure, 0.0f),
+		RHI::IsSrgbFormat(backBuffer->GetFormat()) ? 0.0f : 1.0f,
+		0.0f,
+		0.0f);
+	commandList->SetInlineConstants(sizeof(constants), &constants);
+	commandList->DrawInstanced(3u, 1u, 0u, 0u);
+	commandList->Close();
+	RHI::ICommandList* commandLists[] = { commandList };
+	device->Submit(commandLists, 1u);
+}
+
 void Renderer::EnsureShadowDepthTarget(RHI::IDevice* device)
 {
 	if(device == nullptr || !m_useExplicitShadowPass) return;
@@ -631,50 +723,9 @@ void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 	}
 	if(m_lightingBuffer == nullptr) return;
 
-	const DirectionalLight* light = GetPrimaryDirectionalLight(scene);
-	const PointLight* pointLight = GetPrimaryPointLight(scene);
-	const Math::float3 lightDirection = light != nullptr ? light->direction : m_config.directionalLightDirection;
-	const Math::float3 lightColor = light != nullptr ? light->color : m_config.directionalLightColor;
-	const float lightIntensity = light != nullptr ? light->intensity : m_config.directionalLightIntensity;
-	const bool castsShadow = pointLight != nullptr ? pointLight->castShadow : (light != nullptr ? light->castShadow : true);
-	const float shadowStrength = pointLight != nullptr ? pointLight->shadowStrength : (light != nullptr ? light->shadowStrength : m_config.shadowStrength);
-	const bool shadowsEnabled = IsShadowEnabled() && castsShadow;
-
-	Layout::RendererLightingConstants lighting = {};
-	lighting.cameraPosition = Math::float4(
-		m_config.cameraPosition.x,
-		m_config.cameraPosition.y,
-		m_config.cameraPosition.z,
-		shadowsEnabled ? shadowStrength : 0.0f);
-	lighting.directionalLightDirection = Math::float4(
-		lightDirection.x,
-		lightDirection.y,
-		lightDirection.z,
-		shadowsEnabled ? 1.0f : 0.0f);
-	lighting.directionalLightColor = Math::float4(lightColor.x, lightColor.y, lightColor.z, lightIntensity);
-	lighting.ambientColor = Math::float4(
-		m_config.ambientColor.x * m_config.environment.diffuseColor.x,
-		m_config.ambientColor.y * m_config.environment.diffuseColor.y,
-		m_config.ambientColor.z * m_config.environment.diffuseColor.z,
-		m_config.ambientIntensity * m_config.environment.diffuseIntensity);
-	lighting.shadowParams = Math::float4(
-		m_config.shadowDepthBias,
-		m_config.shadowSlopeBias,
-		m_config.shadowNormalBias,
-		static_cast<float>(m_config.shadowPcfRadius));
-	lighting.pbrParams = Math::float4(m_config.pbr.minRoughness, m_config.pbr.ambientSpecularStrength, 0.0f, 0.0f);
-	lighting.environmentColor = Math::float4(
-		m_config.environment.specularColor.x,
-		m_config.environment.specularColor.y,
-		m_config.environment.specularColor.z,
-		m_config.environment.specularIntensity);
-	if(pointLight != nullptr)
-	{
-		lighting.pointLightPositionRange = Math::float4(
-			pointLight->position.x, pointLight->position.y, pointLight->position.z, pointLight->range);
-		lighting.pointLightColorIntensity = Math::float4(
-			pointLight->color.x, pointLight->color.y, pointLight->color.z, pointLight->intensity);
-	}
+	RendererDesc lightingConfig = m_config;
+	lightingConfig.enableShadows = IsShadowEnabled();
+	Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(scene, lightingConfig);
 
 	void* data = m_lightingBuffer->Map(0);
 	if(data != nullptr)
@@ -696,42 +747,87 @@ void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 	}
 	if(m_shadowMatrixBuffer == nullptr) return;
 
-	const DirectionalLight* light = GetPrimaryDirectionalLight(scene);
-	const PointLight* pointLight = GetPrimaryPointLight(scene);
-	Math::float3 lightDirection = light != nullptr ? light->direction : m_config.directionalLightDirection;
-	ShadowMapDesc shadowMap = m_config.shadowMap;
-	const Math::Bounds3 bounds = IsShadowEnabled() && m_config.autoFitShadowMap ? ComputeShadowBounds(scene) : Math::Bounds3{};
-	if(pointLight != nullptr)
-	{
-		shadowMap.farPlane = std::max(shadowMap.farPlane, pointLight->range);
-		lightDirection = NormalizeOr(pointLight->direction, Math::float3(0.0f, 0.0f, -1.0f));
-		if(bounds.valid)
-		{
-			const Math::float3 center = bounds.Center();
-			lightDirection = NormalizeOr(center - pointLight->position, lightDirection);
-			shadowMap.sceneCenter = center;
-		}
-	}
-	else if(IsShadowEnabled() && m_config.autoFitShadowMap)
-	{
-		if(bounds.valid)
-		{
-			shadowMap = FitDirectionalShadowMapToBounds(
-				lightDirection, m_config.shadowMap, bounds.min, bounds.max, m_config.shadowBoundsPadding);
-		}
-	}
-
 	Layout::RendererShadowConstants shadow = {};
-	if(IsShadowEnabled() && pointLight != nullptr)
+	for(Math::float4x4& matrix : shadow.lightViewProjectionMatrices) matrix = Math::float4x4::Identity();
+	shadow.cameraViewMatrix = m_config.cameraViewMatrix;
+	ShadowLightSelection shadowSelection;
+	[[maybe_unused]] const Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(
+		scene, m_config, IsShadowEnabled(), &shadowSelection);
+	float shadowNearPlane = std::max(m_config.shadowMap.nearPlane, 0.0001f);
+	if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Directional)
 	{
-		shadow.lightViewProjectionMatrix = ComputeSpotLightViewProj(pointLight->position, lightDirection, shadowMap);
+		Math::float3 lightDirection = m_config.directionalLightDirection;
+		if(!scene.DirectionalLights().empty())
+		{
+			lightDirection = scene.GetDirectionalLight(shadowSelection.sceneIndex).direction;
+		}
+		CameraFrustumDesc camera;
+		camera.position = m_config.cameraPosition;
+		camera.forward = m_config.cameraForward;
+		camera.up = m_config.cameraUp;
+		camera.nearPlane = m_config.cameraNearPlane;
+		camera.farPlane = m_config.cameraFarPlane;
+		camera.fovYRadians = m_config.cameraFovYRadians;
+		camera.aspect = m_config.cameraAspect;
+		const DirectionalCascadeData cascades = ComputeDirectionalCascades(
+			camera,
+			lightDirection,
+			m_config.shadowMap,
+			m_config.shadowCascadeCount,
+			m_config.shadowCascadeSplitLambda,
+			m_config.shadowBoundsPadding);
+		for(uint32_t index = 0u; index < cascades.count; ++index)
+		{
+			shadow.lightViewProjectionMatrices[index] = cascades.viewProjections[index];
+		}
+		shadow.cascadeSplits = Math::float4(cascades.splits[0], cascades.splits[1], cascades.splits[2], cascades.splits[3]);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Directional), static_cast<float>(cascades.count), 2.0f, 2.0f);
 	}
-	else
+	else if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Spot)
 	{
-		shadow.lightViewProjectionMatrix = IsShadowEnabled()
-			? ComputeDirectionalLightViewProj(lightDirection, shadowMap)
-			: Math::float4x4::Identity();
+		const SpotLight& spot = scene.GetSpotLight(shadowSelection.sceneIndex);
+		ShadowMapDesc shadowMap = m_config.shadowMap;
+		shadowMap.farPlane = std::max(spot.range, shadowMap.nearPlane + 0.1f);
+		shadowMap.spotFovYRadians = std::clamp(spot.outerConeRadians * 2.0f, 0.1f, 3.0f);
+		shadow.lightViewProjectionMatrices[0] = ComputeSpotLightViewProj(spot.position, spot.direction, shadowMap);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Spot), 1.0f, 1.0f, 1.0f);
+		shadowNearPlane = std::max(shadowMap.nearPlane, 0.0001f);
 	}
+	else if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Point)
+	{
+		const PointLight& point = scene.GetPointLight(shadowSelection.sceneIndex);
+		const float farPlane = std::max(point.range, shadowNearPlane + 0.1f);
+		shadow.lightViewProjectionMatrices = ComputePointLightViewProjections(point.position, shadowNearPlane, farPlane);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Point), 6.0f, 3.0f, 2.0f);
+	}
+	else shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::None), 0.0f, 1.0f, 1.0f);
+	// D3D12의 기존 명시적 shadow pass는 단일 뷰만 기록하므로 첫 행렬은 기존 전체 범위 방식으로 유지한다.
+	if(m_useExplicitShadowPass && IsShadowEnabled())
+	{
+		const Math::Bounds3 bounds = m_config.autoFitShadowMap ? ComputeShadowBounds(scene) : Math::Bounds3{};
+		if(shadowSelection.type == ShadowLightType::Directional)
+		{
+			Math::float3 direction = m_config.directionalLightDirection;
+			if(!scene.DirectionalLights().empty()) direction = scene.GetDirectionalLight(shadowSelection.sceneIndex).direction;
+			ShadowMapDesc map = m_config.shadowMap;
+			if(bounds.valid) map = FitDirectionalShadowMapToBounds(direction, map, bounds.min, bounds.max, m_config.shadowBoundsPadding);
+			shadow.lightViewProjectionMatrices[0] = ComputeDirectionalLightViewProj(direction, map);
+		}
+		else if(shadowSelection.type == ShadowLightType::Point)
+		{
+			const PointLight& point = scene.GetPointLight(shadowSelection.sceneIndex);
+			ShadowMapDesc map = m_config.shadowMap;
+			map.farPlane = std::max(map.farPlane, point.range);
+			Math::float3 direction = Math::NormalizeOr(point.direction, Math::float3(0.0f, 0.0f, -1.0f));
+			if(bounds.valid) direction = Math::NormalizeOr(bounds.Center() - point.position, direction);
+			shadow.lightViewProjectionMatrices[0] = ComputeSpotLightViewProj(point.position, direction, map);
+		}
+	}
+	shadow.pcssParams = Math::float4(
+		std::max(m_config.shadowLightRadius, 0.0f),
+		std::max(m_config.shadowBlockerSearchRadius, 0.0f),
+		std::max(m_config.shadowMaxFilterRadius, 1.0f),
+		shadowNearPlane);
 
 	void* data = m_shadowMatrixBuffer->Map(0);
 	if(data != nullptr)

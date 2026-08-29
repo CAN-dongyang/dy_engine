@@ -132,8 +132,12 @@ layout(std140, set = 0, binding = DY_VULKAN_BINDING_DRAW_CONSTANTS) uniform Vulk
     vec4 textureIndices;
 } pushConstants;
 
-layout(set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
-    mat4 lightViewProjectionMatrix;
+layout(std140, set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
+    mat4 lightViewProjectionMatrices[6];
+    vec4 cascadeSplits;
+    vec4 shadowInfo;
+    vec4 pcssParams;
+    mat4 cameraViewMatrix;
 } shadowMatrix;
 
 layout(std430, set = 0, binding = DY_RENDERER_BINDING_VERTEX_STORAGE) readonly buffer VertexStorage {
@@ -164,5 +168,6 @@ void main() {
         localPosition = (LoadSkinMatrix(uint(resolvedVertexIndex), pushConstants.firstVertex) * vec4(localPosition, 1.0)).xyz;
     }
     vec4 worldPosition = pushConstants.modelMatrix * vec4(localPosition, 1.0);
-    gl_Position = shadowMatrix.lightViewProjectionMatrix * worldPosition;
+    int shadowView = clamp(int(pushConstants.emissiveTextureIndex + 0.5), 0, 5);
+    gl_Position = shadowMatrix.lightViewProjectionMatrices[shadowView] * worldPosition;
 }

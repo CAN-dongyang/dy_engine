@@ -31,8 +31,12 @@ layout(std430, set = 0, binding = DY_RENDERER_BINDING_INDEX_STORAGE) readonly bu
     uint indices[];
 } indexStorage;
 
-layout(set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
-    mat4 lightViewProjectionMatrix;
+layout(std140, set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
+    mat4 lightViewProjectionMatrices[6];
+    vec4 cascadeSplits;
+    vec4 shadowInfo;
+    vec4 pcssParams;
+    mat4 cameraViewMatrix;
 } shadowMatrix;
 
 struct Vertex {
@@ -73,5 +77,5 @@ void main() {
     fragWorldPosition = worldPosition.xyz;
     fragNormal = normalize(mat3(pushConstants.modelMatrix) * vertex.normal);
     fragTangent = vec4(normalize(mat3(pushConstants.modelMatrix) * vertex.tangent.xyz), vertex.tangent.w);
-    fragLightSpacePosition = shadowMatrix.lightViewProjectionMatrix * worldPosition;
+    fragLightSpacePosition = shadowMatrix.lightViewProjectionMatrices[0] * worldPosition;
 }

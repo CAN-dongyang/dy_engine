@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
@@ -745,6 +746,15 @@ namespace {
 		}
 
 		VkBuffer GetHandle() const { return m_buffer; }
+		bool Read(uint32_t offset, void* destination, uint32_t size) const
+		{
+			if(destination == nullptr || size == 0u || offset > GetSize() || size > GetSize() - offset) return false;
+			void* mapped = nullptr;
+			if(vkMapMemory(m_device, m_memory, offset, size, 0, &mapped) != VK_SUCCESS || mapped == nullptr) return false;
+			std::memcpy(destination, mapped, size);
+			vkUnmapMemory(m_device, m_memory);
+			return true;
+		}
 
 	private:
 		VulkanContext m_context = {};
@@ -833,6 +843,7 @@ private:
 	bool CreateCommandBuffer();
 	bool CreateFallbackTexture();
 	bool CreateDrawConstantBuffers();
+	void ResolveShadowAtlasConfig(const VulkanCommandList& commandList);
 	bool UploadDrawConstants(const VulkanCommandList& commandList);
 	void DestroyDrawConstantBuffers();
 	void CollectRetiredBuffers();
@@ -853,8 +864,8 @@ private:
 	bool RecordCommandBuffer(const VulkanCommandList& commandList);
 	bool RecordComputePass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
 	bool RecordShadowPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
-	bool RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList);
-	bool ResolveMainPassTarget(const VulkanCommandList& commandList, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
+	bool RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t firstDraw, uint32_t drawCount);
+	bool ResolveMainPassTarget(const VulkanCommandList::DrawCall& drawCall, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool GetOrCreateOffscreenFramebuffer(dy::RHI::ITexture* colorTarget, dy::RHI::ITexture* depthTarget, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent);
 	bool CreateOffscreenRenderPass(VkFormat colorFormat, VkFormat depthFormat, VkImageLayout colorFinalLayout, VkRenderPass& renderPass);
 	void DestroyRenderTargetCache();
@@ -895,6 +906,10 @@ private:
 	};
 	std::vector<DrawConstantFrame> m_drawConstantFrames;
 	VkDeviceSize m_drawConstantStride = 0u;
+	uint32_t m_drawConstantCapacity = 0u;
+	uint32_t m_activeShadowViewCount = 0u;
+	uint32_t m_shadowAtlasColumns = 1u;
+	uint32_t m_shadowAtlasRows = 1u;
 
 	std::vector<VkSemaphore> m_imageAvailableSemaphores;
 	std::vector<VkSemaphore> m_renderFinishedSemaphores;
@@ -2090,11 +2105,29 @@ bool VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandLis
 		if(!RecordShadowPass(commandBuffer, commandList)) return false;
 	}
 
-	// Pass 2: Main Pass
-	if(!RecordMainPass(commandBuffer, commandList)) return false;
-	const bool rendersToSwapchain = commandList.m_renderTargetCount == 0u
-		|| commandList.m_renderTargets[0] == nullptr
-		|| commandList.m_renderTargets[0] == m_backBuffer;
+	// Pass 2+: main and post-process passes, split by the render-target snapshot captured per draw.
+	uint32_t firstDraw = 0u;
+	while(firstDraw < commandList.m_drawCalls.size())
+	{
+		const VulkanCommandList::DrawCall& first = commandList.m_drawCalls[firstDraw];
+		uint32_t endDraw = firstDraw + 1u;
+		while(endDraw < commandList.m_drawCalls.size())
+		{
+			const VulkanCommandList::DrawCall& next = commandList.m_drawCalls[endDraw];
+			bool sameTargets = next.renderTargetCount == first.renderTargetCount && next.depthStencil == first.depthStencil;
+			for(uint32_t target = 0u; sameTargets && target < first.renderTargetCount; ++target)
+				sameTargets = next.renderTargets[target] == first.renderTargets[target];
+			if(!sameTargets) break;
+			++endDraw;
+		}
+		if(!RecordMainPass(commandBuffer, commandList, firstDraw, endDraw - firstDraw)) return false;
+		firstDraw = endDraw;
+	}
+	const VulkanCommandList::DrawCall* lastDraw = commandList.m_drawCalls.empty() ? nullptr : &commandList.m_drawCalls.back();
+	const bool rendersToSwapchain = lastDraw == nullptr
+		|| lastDraw->renderTargetCount == 0u
+		|| lastDraw->renderTargets[0] == nullptr
+		|| lastDraw->renderTargets[0] == m_backBuffer;
 	if(!rendersToSwapchain)
 	{
 		std::array<VkClearValue, 2> clearValues = {};
@@ -2217,91 +2250,106 @@ bool VulkanDevice::Impl::RecordShadowPass(VkCommandBuffer commandBuffer, const V
 
 	vkCmdBeginRenderPass(commandBuffer, &newShadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-	VkViewport newShadowViewport{};
-	newShadowViewport.x = 0.0f;
-	newShadowViewport.y = 0.0f;
-	newShadowViewport.width = static_cast<float>(m_shadowMapResolution);
-	newShadowViewport.height = static_cast<float>(m_shadowMapResolution);
-	newShadowViewport.minDepth = 0.0f;
-	newShadowViewport.maxDepth = 1.0f;
-	VkRect2D newShadowScissor{};
-	newShadowScissor.offset = {0, 0};
-	newShadowScissor.extent = { m_shadowMapResolution, m_shadowMapResolution };
-	vkCmdSetViewport(commandBuffer, 0, 1, &newShadowViewport);
-	vkCmdSetScissor(commandBuffer, 0, 1, &newShadowScissor);
-
+	const uint32_t tileWidth = std::max(m_shadowMapResolution / m_shadowAtlasColumns, 1u);
+	const uint32_t tileHeight = std::max(m_shadowMapResolution / m_shadowAtlasRows, 1u);
 	VkPipeline currentShadowPipeline = VK_NULL_HANDLE;
-	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
-		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
-		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
-		if (pipelineState == nullptr) return false;
-		if (!pipelineState->IsShadowPassEnabled()) continue;
-		const size_t profileIndex = ResourceProfileIndex(pipelineState->GetResourceProfile());
-		if(profileIndex >= m_shadowPipelines.size()) return false;
-		const VkPipeline shadowPipeline = m_shadowPipelines[profileIndex];
-		const VkPipelineLayout shadowPipelineLayout = m_shadowPipelineLayouts[profileIndex];
-		const ProfileResources* profileResources = GetProfileResources(pipelineState->GetResourceProfile());
-		if(shadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE || profileResources == nullptr) return false;
-		if(currentShadowPipeline != shadowPipeline)
+	for(uint32_t shadowView = 0u; shadowView < m_activeShadowViewCount; ++shadowView)
+	{
+		const uint32_t tileX = shadowView % m_shadowAtlasColumns;
+		const uint32_t tileY = shadowView / m_shadowAtlasColumns;
+		VkViewport shadowViewport{};
+		shadowViewport.x = static_cast<float>(tileX * tileWidth);
+		shadowViewport.y = static_cast<float>(tileY * tileHeight);
+		shadowViewport.width = static_cast<float>(tileWidth);
+		shadowViewport.height = static_cast<float>(tileHeight);
+		shadowViewport.minDepth = 0.0f;
+		shadowViewport.maxDepth = 1.0f;
+		VkRect2D shadowScissor{};
+		shadowScissor.offset = { static_cast<int32_t>(tileX * tileWidth), static_cast<int32_t>(tileY * tileHeight) };
+		shadowScissor.extent = { tileWidth, tileHeight };
+		vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
+		vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
+
+		for(uint32_t drawIndex = 0u; drawIndex < commandList.m_drawCalls.size(); ++drawIndex)
 		{
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
-			currentShadowPipeline = shadowPipeline;
-		}
-		const bool usesBindlessTextures = pipelineState->UsesBindlessTextures();
-
-		bool shouldCastShadow = true;
-		if (drawCall.pushConstantSize >= m_shaderLayout.drawModePushConstantOffset + sizeof(float)) {
-			float drawMode = 0.0f;
-			std::memcpy(&drawMode, drawCall.pushConstants.data() + m_shaderLayout.drawModePushConstantOffset, sizeof(drawMode));
-			if (drawCall.pushConstantSize >= m_shaderLayout.pushConstantRangeSize) {
-				const uint32_t drawFlags = static_cast<uint32_t>(drawMode + 0.5f);
-				shouldCastShadow = (drawFlags & m_shaderLayout.castShadowFlag) != 0;
-			} else {
-				shouldCastShadow = drawMode >= 0.0f && drawMode <= 1.5f;
+			const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
+			const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
+			if(pipelineState == nullptr) return false;
+			if(!pipelineState->IsShadowPassEnabled()) continue;
+			const size_t profileIndex = ResourceProfileIndex(pipelineState->GetResourceProfile());
+			if(profileIndex >= m_shadowPipelines.size()) return false;
+			const VkPipeline shadowPipeline = m_shadowPipelines[profileIndex];
+			const VkPipelineLayout shadowPipelineLayout = m_shadowPipelineLayouts[profileIndex];
+			const ProfileResources* profileResources = GetProfileResources(pipelineState->GetResourceProfile());
+			if(shadowPipeline == VK_NULL_HANDLE || shadowPipelineLayout == VK_NULL_HANDLE || profileResources == nullptr) return false;
+			if(currentShadowPipeline != shadowPipeline)
+			{
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+				currentShadowPipeline = shadowPipeline;
 			}
-		}
-		if (!shouldCastShadow) continue;
-
-		const uint32_t descriptorSlot = usesBindlessTextures ? 0u : drawIndex;
-		const VkDescriptorSet descriptorSet = GetProfileDescriptorSet(*profileResources, m_currentFrameIndex, descriptorSlot);
-		if (descriptorSet == VK_NULL_HANDLE) return false;
-		const uint32_t drawConstantOffset = static_cast<uint32_t>(m_drawConstantStride * drawIndex);
-		vkCmdBindDescriptorSets(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			shadowPipelineLayout,
-			0,
-			1,
-			&descriptorSet,
-			1,
-			&drawConstantOffset);
-
-		if (drawCall.indexed) {
-			if (drawCall.indexCount > 0) {
-				vkCmdDraw(commandBuffer, drawCall.indexCount, drawCall.instanceCount, 0, drawCall.startInstance);
+			const bool usesBindlessTextures = pipelineState->UsesBindlessTextures();
+			bool shouldCastShadow = true;
+			if(drawCall.pushConstantSize >= m_shaderLayout.drawModePushConstantOffset + sizeof(float))
+			{
+				float drawMode = 0.0f;
+				std::memcpy(&drawMode, drawCall.pushConstants.data() + m_shaderLayout.drawModePushConstantOffset, sizeof(drawMode));
+				if(drawCall.pushConstantSize >= m_shaderLayout.pushConstantRangeSize)
+				{
+					const uint32_t drawFlags = static_cast<uint32_t>(drawMode + 0.5f);
+					shouldCastShadow = (drawFlags & m_shaderLayout.castShadowFlag) != 0;
+				}
+				else shouldCastShadow = drawMode >= 0.0f && drawMode <= 1.5f;
 			}
-		} else {
-			vkCmdDraw(commandBuffer, drawCall.vertexCount, drawCall.instanceCount, 0, drawCall.startInstance);
+			if(!shouldCastShadow) continue;
+
+			const uint32_t descriptorSlot = usesBindlessTextures ? 0u : drawIndex;
+			const VkDescriptorSet descriptorSet = GetProfileDescriptorSet(*profileResources, m_currentFrameIndex, descriptorSlot);
+			if(descriptorSet == VK_NULL_HANDLE) return false;
+			const uint64_t shadowSlot = (static_cast<uint64_t>(shadowView) + 1u) * m_descriptorCapacityPerFrame + drawIndex;
+			const uint64_t dynamicOffset64 = static_cast<uint64_t>(m_drawConstantStride) * shadowSlot;
+			if(shadowSlot >= m_drawConstantCapacity || dynamicOffset64 > std::numeric_limits<uint32_t>::max()) return false;
+			const uint32_t dynamicOffset = static_cast<uint32_t>(dynamicOffset64);
+			vkCmdBindDescriptorSets(
+				commandBuffer,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				shadowPipelineLayout,
+				0,
+				1,
+				&descriptorSet,
+				1,
+				&dynamicOffset);
+
+			if(drawCall.indexed)
+			{
+				if(drawCall.indexCount > 0u) vkCmdDraw(commandBuffer, drawCall.indexCount, drawCall.instanceCount, 0, drawCall.startInstance);
+			}
+			else vkCmdDraw(commandBuffer, drawCall.vertexCount, drawCall.instanceCount, 0, drawCall.startInstance);
 		}
 	}
 
 	vkCmdEndRenderPass(commandBuffer);
 	return true;
 }
-bool VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList) {
+bool VulkanDevice::Impl::RecordMainPass(
+	VkCommandBuffer commandBuffer,
+	const VulkanCommandList& commandList,
+	uint32_t firstDraw,
+	uint32_t drawCount) {
+	if(drawCount == 0u || firstDraw >= commandList.m_drawCalls.size()) return true;
+	const VulkanCommandList::DrawCall& passDraw = commandList.m_drawCalls[firstDraw];
 	VkRenderPass renderPass = VK_NULL_HANDLE;
 	VkFramebuffer framebuffer = VK_NULL_HANDLE;
 	VkExtent2D renderExtent = {};
-	if (!ResolveMainPassTarget(commandList, renderPass, framebuffer, renderExtent)) return false;
+	if (!ResolveMainPassTarget(passDraw, renderPass, framebuffer, renderExtent)) return false;
 
 	std::array<VkClearValue, 2> clearValues = {};
 	clearValues[0].color = { {
-		commandList.m_clearColor[0],
-		commandList.m_clearColor[1],
-		commandList.m_clearColor[2],
-		commandList.m_clearColor[3]
+		passDraw.clearColor[0],
+		passDraw.clearColor[1],
+		passDraw.clearColor[2],
+		passDraw.clearColor[3]
 	} };
-	clearValues[1].depthStencil = { commandList.m_clearDepth, 0 };
+	clearValues[1].depthStencil = { passDraw.clearDepth, 0 };
 	VkRenderPassBeginInfo renderPassInfo{};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 	renderPassInfo.renderPass = renderPass;
@@ -2317,7 +2365,8 @@ bool VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	VkPipelineLayout currentPipelineLayout = VK_NULL_HANDLE;
 	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 	VkDescriptorSet currentBindlessDescriptorSet = VK_NULL_HANDLE;
-	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
+	const uint32_t endDraw = std::min<uint32_t>(firstDraw + drawCount, static_cast<uint32_t>(commandList.m_drawCalls.size()));
+	for (uint32_t drawIndex = firstDraw; drawIndex < endDraw; ++drawIndex) {
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
 		if (pipelineState == nullptr) return false;
@@ -2407,22 +2456,22 @@ bool VulkanDevice::Impl::RecordMainPass(VkCommandBuffer commandBuffer, const Vul
 	return true;
 }
 
-bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandList, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent) {
-	if (commandList.m_renderTargetCount > 1) {
+bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList::DrawCall& drawCall, VkRenderPass& renderPass, VkFramebuffer& framebuffer, VkExtent2D& extent) {
+	if (drawCall.renderTargetCount > 1) {
 		SDL_Log("Vulkan main pass currently supports one color render target.");
 		return false;
 	}
 
 	dy::RHI::ITexture* colorTarget = m_backBuffer;
-	if (commandList.m_renderTargetCount == 1 && commandList.m_renderTargets[0] != nullptr) {
-		colorTarget = commandList.m_renderTargets[0];
+	if (drawCall.renderTargetCount == 1 && drawCall.renderTargets[0] != nullptr) {
+		colorTarget = drawCall.renderTargets[0];
 	}
 
 	if (colorTarget == nullptr || colorTarget == m_backBuffer) {
-		if (commandList.m_depthStencil != nullptr && commandList.m_depthStencil != m_depthTexture) {
+		if (drawCall.depthStencil != nullptr && drawCall.depthStencil != m_depthTexture) {
 			for (const RenderTargetCacheEntry& entry : m_renderTargetCache) {
 				if (entry.colorTarget == m_backBuffer &&
-					entry.depthTarget == commandList.m_depthStencil &&
+					entry.depthTarget == drawCall.depthStencil &&
 					entry.imageIndex == m_currentImageIndex) {
 					renderPass = entry.renderPass;
 					framebuffer = entry.framebuffer;
@@ -2431,7 +2480,7 @@ bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandL
 				}
 			}
 
-			const VulkanTexture* depthTexture = dynamic_cast<const VulkanTexture*>(commandList.m_depthStencil);
+			const VulkanTexture* depthTexture = dynamic_cast<const VulkanTexture*>(drawCall.depthStencil);
 			if (depthTexture == nullptr || depthTexture->GetImageView() == VK_NULL_HANDLE) {
 				SDL_Log("Vulkan swapchain pass depth target is not a valid Vulkan texture.");
 				return false;
@@ -2459,7 +2508,7 @@ bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandL
 
 			RenderTargetCacheEntry entry{};
 			entry.colorTarget = m_backBuffer;
-			entry.depthTarget = commandList.m_depthStencil;
+			entry.depthTarget = drawCall.depthStencil;
 			entry.renderPass = m_mainRenderPass;
 			entry.framebuffer = swapchainFramebuffer;
 			entry.imageIndex = m_currentImageIndex;
@@ -2479,7 +2528,7 @@ bool VulkanDevice::Impl::ResolveMainPassTarget(const VulkanCommandList& commandL
 		return renderPass != VK_NULL_HANDLE && framebuffer != VK_NULL_HANDLE;
 	}
 
-	return GetOrCreateOffscreenFramebuffer(colorTarget, commandList.m_depthStencil, renderPass, framebuffer, extent);
+	return GetOrCreateOffscreenFramebuffer(colorTarget, drawCall.depthStencil, renderPass, framebuffer, extent);
 }
 
 bool VulkanDevice::Impl::GetOrCreateOffscreenFramebuffer(
@@ -2822,8 +2871,11 @@ bool VulkanDevice::Impl::CreateDrawConstantBuffers()
 		return false;
 	}
 	if(alignedStride > std::numeric_limits<uint32_t>::max()) return false;
-	const uint64_t totalSize = alignedStride * static_cast<uint64_t>(m_descriptorCapacityPerFrame);
-	if(m_descriptorCapacityPerFrame != 0u && totalSize / m_descriptorCapacityPerFrame != alignedStride) return false;
+	const uint64_t drawConstantCapacity = static_cast<uint64_t>(m_descriptorCapacityPerFrame)
+		* (static_cast<uint64_t>(Layout::kMaxShadowViews) + 1u);
+	if(drawConstantCapacity == 0u || drawConstantCapacity > std::numeric_limits<uint32_t>::max()) return false;
+	const uint64_t totalSize = alignedStride * drawConstantCapacity;
+	if(totalSize / drawConstantCapacity != alignedStride) return false;
 	if(totalSize == 0u || totalSize > std::numeric_limits<uint32_t>::max())
 	{
 		SDL_Log("Vulkan draw constant UBO capacity exceeds dynamic-offset range.");
@@ -2831,6 +2883,7 @@ bool VulkanDevice::Impl::CreateDrawConstantBuffers()
 	}
 
 	m_drawConstantStride = static_cast<VkDeviceSize>(alignedStride);
+	m_drawConstantCapacity = static_cast<uint32_t>(drawConstantCapacity);
 	m_drawConstantFrames.resize(m_maxFramesInFlight);
 	try
 	{
@@ -2859,8 +2912,40 @@ bool VulkanDevice::Impl::CreateDrawConstantBuffers()
 	return true;
 }
 
+void VulkanDevice::Impl::ResolveShadowAtlasConfig(const VulkanCommandList& commandList)
+{
+	m_activeShadowViewCount = 0u;
+	m_shadowAtlasColumns = 1u;
+	m_shadowAtlasRows = 1u;
+	if(commandList.m_drawCalls.empty()) return;
+	const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls.front();
+	const uint32_t binding = m_shaderLayout.shadowMatrixBinding;
+	if(binding >= drawCall.constantBuffers.size()) return;
+	const auto& shadowBinding = drawCall.constantBuffers[binding];
+	const VulkanBuffer* shadowBuffer = dynamic_cast<const VulkanBuffer*>(shadowBinding.buffer);
+	if(shadowBuffer == nullptr) return;
+	Layout::RendererShadowConstants shadow = {};
+	if(!shadowBuffer->Read(shadowBinding.offset, &shadow, sizeof(shadow))) return;
+	if(!std::isfinite(shadow.shadowInfo.y) || !std::isfinite(shadow.shadowInfo.z) || !std::isfinite(shadow.shadowInfo.w)) return;
+	m_activeShadowViewCount = std::clamp(
+		static_cast<uint32_t>(std::max(shadow.shadowInfo.y, 0.0f) + 0.5f),
+		0u,
+		Layout::kMaxShadowViews);
+	m_shadowAtlasColumns = std::clamp(
+		static_cast<uint32_t>(std::max(shadow.shadowInfo.z, 1.0f) + 0.5f),
+		1u,
+		Layout::kMaxShadowViews);
+	m_shadowAtlasRows = std::clamp(
+		static_cast<uint32_t>(std::max(shadow.shadowInfo.w, 1.0f) + 0.5f),
+		1u,
+		Layout::kMaxShadowViews);
+	const uint64_t atlasCapacity = static_cast<uint64_t>(m_shadowAtlasColumns) * m_shadowAtlasRows;
+	if(m_activeShadowViewCount > atlasCapacity) m_activeShadowViewCount = static_cast<uint32_t>(atlasCapacity);
+}
+
 bool VulkanDevice::Impl::UploadDrawConstants(const VulkanCommandList& commandList)
 {
+	ResolveShadowAtlasConfig(commandList);
 	if(commandList.m_drawCalls.size() > m_descriptorCapacityPerFrame)
 	{
 		if(!m_drawCapacityErrorReported)
@@ -2905,6 +2990,17 @@ bool VulkanDevice::Impl::UploadDrawConstants(const VulkanCommandList& commandLis
 			frame.mapped + static_cast<size_t>(m_drawConstantStride) * drawIndex,
 			&constants,
 			sizeof(constants));
+		for(uint32_t shadowView = 0u; shadowView < m_activeShadowViewCount; ++shadowView)
+		{
+			Layout::DrawConstants shadowConstants = constants;
+			shadowConstants.emissiveColor.w = static_cast<float>(shadowView);
+			const uint64_t shadowSlot = (static_cast<uint64_t>(shadowView) + 1u) * m_descriptorCapacityPerFrame + drawIndex;
+			if(shadowSlot >= m_drawConstantCapacity) return false;
+			std::memcpy(
+				frame.mapped + static_cast<size_t>(m_drawConstantStride) * static_cast<size_t>(shadowSlot),
+				&shadowConstants,
+				sizeof(shadowConstants));
+		}
 	}
 	return true;
 }
@@ -2925,6 +3021,10 @@ void VulkanDevice::Impl::DestroyDrawConstantBuffers()
 	}
 	m_drawConstantFrames.clear();
 	m_drawConstantStride = 0u;
+	m_drawConstantCapacity = 0u;
+	m_activeShadowViewCount = 0u;
+	m_shadowAtlasColumns = 1u;
+	m_shadowAtlasRows = 1u;
 }
 
 bool VulkanDevice::Impl::CreateDescriptorSetLayout(
@@ -2954,7 +3054,7 @@ bool VulkanDevice::Impl::CreateDescriptorSetLayout(
 	}
 	addBinding(m_shaderLayout.shadowSamplerBinding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 	addBinding(m_shaderLayout.lightingConstantBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
-	addBinding(m_shaderLayout.shadowMatrixBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
+	addBinding(m_shaderLayout.shadowMatrixBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	addBinding(m_shaderLayout.vertexStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 	addBinding(m_shaderLayout.indexStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 	if(profile == dy::RHI::GraphicsResourceProfile::PerDrawSkin)
@@ -3231,15 +3331,33 @@ bool VulkanDevice::Impl::UpdateDrawDescriptorSets(const VulkanCommandList& comma
 			commandList.m_drawCalls.size(), m_descriptorCapacityPerFrame, m_maxDrawsPerFrame);
 		return false;
 	}
-	if (!commandList.m_drawCalls.empty()) {
-		const VulkanCommandList::DrawCall& firstDraw = commandList.m_drawCalls.front();
-		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(firstDraw.pipelineState);
-		if (pipelineState != nullptr && pipelineState->UsesBindlessTextures()) {
-			return UpdateDrawDescriptorSet(firstDraw, 0);
-		}
+	for(const VulkanCommandList::DrawCall& drawCall : commandList.m_drawCalls)
+	{
+		if(drawCall.renderTargetCount != 1u
+			|| drawCall.renderTargets[0] == nullptr
+			|| drawCall.renderTargets[0] == m_backBuffer) continue;
+		VkRenderPass renderPass = VK_NULL_HANDLE;
+		VkFramebuffer framebuffer = VK_NULL_HANDLE;
+		VkExtent2D extent = {};
+		if(!GetOrCreateOffscreenFramebuffer(
+			drawCall.renderTargets[0],
+			drawCall.depthStencil,
+			renderPass,
+			framebuffer,
+			extent)) return false;
 	}
+	bool bindlessSetUpdated = false;
 	for (uint32_t drawIndex = 0; drawIndex < commandList.m_drawCalls.size(); ++drawIndex) {
-		if (!UpdateDrawDescriptorSet(commandList.m_drawCalls[drawIndex], drawIndex)) return false;
+		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
+		const VulkanPipelineState* pipelineState = dynamic_cast<const VulkanPipelineState*>(drawCall.pipelineState);
+		if(pipelineState == nullptr) return false;
+		if(pipelineState->UsesBindlessTextures())
+		{
+			if(bindlessSetUpdated) continue;
+			if(!UpdateDrawDescriptorSet(drawCall, 0u)) return false;
+			bindlessSetUpdated = true;
+		}
+		else if(!UpdateDrawDescriptorSet(drawCall, drawIndex)) return false;
 	}
 	return true;
 }
