@@ -806,6 +806,13 @@ namespace
 		RHI::ICommandList* commandList = device->AcquireCommandList();
 		RHI::ITexture* backBuffer = device->GetBackBuffer();
 		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
+
+		if(ShouldRecordShadow(context))
+		{
+			RecordShadowDraws(commandList, scene, context);
+		}
+
+		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
 		m_instances.assign(1u, InstanceTransform{ Math::float4x4::Identity() });
 		RHI::IBuffer* activeInstanceBuffer = nullptr;
 		uint32_t activeInstanceBufferBytes = 0u;
@@ -823,13 +830,6 @@ namespace
 				0u,
 				activeInstanceBufferBytes);
 		}
-
-		if(ShouldRecordShadow(context))
-		{
-			RecordShadowDraws(commandList, scene, context);
-		}
-
-		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
