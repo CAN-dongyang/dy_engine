@@ -100,6 +100,7 @@ int main(int argc, char** argv)
 		else
 		{
 			const std::vector<const char*> models = {
+				"Models/Fox.glb",
 				"Models/Duck/glTF/Duck.gltf",
 				"Models/Avocado/glTF/Avocado.gltf",
 				"Models/BoomBox/glTF/BoomBox.gltf",
