@@ -9,8 +9,8 @@ class VulkanPipeline {
 public:
     void Initialize(
         const VulkanContext& context,
-        VkRenderPass renderPass,
-        VkExtent2D extent,
+        VkFormat colorAttachmentFormat,
+        VkFormat depthAttachmentFormat,
         VkDescriptorSetLayout descriptorSetLayout,
         const dy::RHI::GraphicsPipelineDesc& desc,
         VkDescriptorSetLayout bindlessDescriptorSetLayout = VK_NULL_HANDLE);

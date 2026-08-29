@@ -35,8 +35,8 @@ namespace
 
 void VulkanPipeline::Initialize(
 	const VulkanContext& context,
-	VkRenderPass renderPass,
-	VkExtent2D,
+	VkFormat colorAttachmentFormat,
+	VkFormat depthAttachmentFormat,
 	VkDescriptorSetLayout descriptorSetLayout,
 	const dy::RHI::GraphicsPipelineDesc& desc,
 	VkDescriptorSetLayout bindlessDescriptorSetLayout)
@@ -129,8 +129,15 @@ void VulkanPipeline::Initialize(
 		throw std::runtime_error("failed to create pipeline layout");
 	}
 
+	VkPipelineRenderingCreateInfo renderingInfo{};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachmentFormats = &colorAttachmentFormat;
+	renderingInfo.depthAttachmentFormat = depthAttachmentFormat;
+
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext = &renderingInfo;
 	pipelineInfo.stageCount = 2;
 	pipelineInfo.pStages = shaderStages;
 	pipelineInfo.pVertexInputState = &vertexInputInfo;
@@ -142,7 +149,7 @@ void VulkanPipeline::Initialize(
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.layout = m_pipelineLayout;
-	pipelineInfo.renderPass = renderPass;
+	pipelineInfo.renderPass = VK_NULL_HANDLE;
 	pipelineInfo.subpass = 0;
 
 	if (vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS) {
