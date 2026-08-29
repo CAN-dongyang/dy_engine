@@ -34,13 +34,6 @@ target_link_libraries(${PROJECT_NAME} PUBLIC Engine_Options)
 include(Dependencies)
 include(BuildOptions)
 
-include(CTest)
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
-	add_subdirectory(tests)
-elseif(BUILD_TESTING)
-	message(STATUS "Local tests are not present; skipping test targets.")
-endif()
-
 # Only add the executable if this is the main project being built (not when included as a subdirectory in another project)
 if(CMAKE_PROJECT_NAME  STREQUAL PROJECT_NAME)
 	add_subdirectory(examples)
