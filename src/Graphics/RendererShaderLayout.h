@@ -54,7 +54,7 @@ namespace dy::Graphics::RendererShaderLayout
 
 	struct RendererDirectionalLight
 	{
-		Math::float4 directionIlluminance;
+		Math::float4 directionIntensity;
 		Math::float4 color;
 	};
 
@@ -74,7 +74,7 @@ namespace dy::Graphics::RendererShaderLayout
 
 	struct RendererRectAreaLight
 	{
-		Math::float4 positionLuminance;
+		Math::float4 positionIntensity;
 		Math::float4 directionWidth;
 		Math::float4 upHeight;
 		Math::float4 color;
@@ -82,7 +82,7 @@ namespace dy::Graphics::RendererShaderLayout
 
 	struct RendererDiscAreaLight
 	{
-		Math::float4 positionLuminance;
+		Math::float4 positionIntensity;
 		Math::float4 directionRadius;
 		Math::float4 up;
 		Math::float4 color;
@@ -91,18 +91,22 @@ namespace dy::Graphics::RendererShaderLayout
 	struct RendererLightingConstants
 	{
 		Math::float4 cameraPosition;
+		Math::float4 directionalLightDirection;
+		Math::float4 directionalLightColor;
 		Math::float4 ambientColor;
 		Math::float4 shadowParams;
 		Math::float4 pbrParams;
 		Math::float4 environmentColor;
+		Math::float4 pointLightPositionRange;
+		Math::float4 pointLightColorIntensity;
 		Math::float4 lightCounts;
-		Math::float4 shadowLight;
 		Math::float4 areaLightCounts;
 		std::array<RendererDirectionalLight, kMaxDirectionalLights> directionalLights;
 		std::array<RendererPointLight, kMaxPointLights> pointLights;
 		std::array<RendererSpotLight, kMaxSpotLights> spotLights;
 		std::array<RendererRectAreaLight, kMaxRectAreaLights> rectAreaLights;
 		std::array<RendererDiscAreaLight, kMaxDiscAreaLights> discAreaLights;
+		Math::float4 shadowLight;
 	};
 
 	struct RendererShadowConstants
@@ -142,21 +146,33 @@ namespace dy::Graphics::RendererShaderLayout
 	static_assert(offsetof(DrawConstants, textureIndices) == 192u, "Renderer bindless texture indices offset must match shader layout.");
 	static_assert(kPushConstantRangeSize == 208u, "Renderer draw constants must match push constant range.");
 	static_assert(kBindlessDrawStorageBinding + 1u == kDescriptorBindingCount, "Renderer descriptor bindings must remain contiguous.");
-	static_assert(kSkinInfluenceStorageBinding == kDescriptorBindingCount, "Model skin influence binding must extend the common layout.");
-	static_assert(kSkinPaletteStorageBinding + 1u == kVulkanSkinningDescriptorBindingCount, "Model skinning bindings must remain contiguous.");
-	static_assert(kVulkanDrawConstantsBinding + 1u == kVulkanDescriptorBindingCount, "Vulkan draw constants must terminate the Vulkan layout.");
+	static_assert(kSkinInfluenceStorageBinding == kDescriptorBindingCount, "Vulkan skin influence binding must follow the shared layout.");
+	static_assert(kSkinPaletteStorageBinding + 1u == kVulkanSkinningDescriptorBindingCount, "Vulkan skinning bindings must remain contiguous.");
+	static_assert(kVulkanDrawConstantsBinding + 1u == kVulkanDescriptorBindingCount, "Vulkan draw constants binding must terminate the Vulkan layout.");
 	static_assert(kMaterialTextureBindingCount + 1u == kSamplerDescriptorCount, "Renderer sampler descriptor count must include shadow map.");
-	static_assert(sizeof(RendererDirectionalLight) == 32u, "Directional light must match two GLSL vec4 values.");
-	static_assert(sizeof(RendererPointLight) == 32u, "Point light must match two GLSL vec4 values.");
-	static_assert(sizeof(RendererSpotLight) == 64u, "Spot light must match four GLSL vec4 values.");
-	static_assert(sizeof(RendererRectAreaLight) == 64u, "Rect area light must match four GLSL vec4 values.");
-	static_assert(sizeof(RendererDiscAreaLight) == 64u, "Disc area light must match four GLSL vec4 values.");
-	static_assert(offsetof(RendererLightingConstants, directionalLights) == 128u, "Directional light array offset must match GLSL std140.");
-	static_assert(offsetof(RendererLightingConstants, pointLights) == 256u, "Point light array offset must match GLSL std140.");
-	static_assert(offsetof(RendererLightingConstants, spotLights) == 768u, "Spot light array offset must match GLSL std140.");
-	static_assert(offsetof(RendererLightingConstants, rectAreaLights) == 1792u, "Rect area light array offset must match GLSL std140.");
-	static_assert(offsetof(RendererLightingConstants, discAreaLights) == 2048u, "Disc area light array offset must match GLSL std140.");
-	static_assert(sizeof(RendererLightingConstants) == 2304u, "Lighting constants must match GLSL std140 layout.");
+	static_assert(sizeof(RendererDirectionalLight) == 32u, "Directional light layout must use two float4 values.");
+	static_assert(sizeof(RendererPointLight) == 32u, "Point light layout must use two float4 values.");
+	static_assert(sizeof(RendererSpotLight) == 64u, "Spot light layout must use four float4 values.");
+	static_assert(sizeof(RendererRectAreaLight) == 64u, "Rect area light layout must use four float4 values.");
+	static_assert(sizeof(RendererDiscAreaLight) == 64u, "Disc area light layout must use four float4 values.");
+	static_assert(offsetof(RendererLightingConstants, cameraPosition) == 0u, "Lighting prefix camera offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, directionalLightDirection) == 16u, "Lighting prefix directional direction offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, directionalLightColor) == 32u, "Lighting prefix directional color offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, ambientColor) == 48u, "Lighting prefix ambient offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, shadowParams) == 64u, "Lighting prefix shadow offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, pbrParams) == 80u, "Lighting prefix PBR offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, environmentColor) == 96u, "Lighting prefix environment offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, pointLightPositionRange) == 112u, "Lighting prefix point position offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, pointLightColorIntensity) == 128u, "Lighting prefix point color offset must remain stable.");
+	static_assert(offsetof(RendererLightingConstants, lightCounts) == 144u, "Light count offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, areaLightCounts) == 160u, "Area light count offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, directionalLights) == 176u, "Directional array offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, pointLights) == 304u, "Point array offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, spotLights) == 816u, "Spot array offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, rectAreaLights) == 1840u, "Rect area array offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, discAreaLights) == 2096u, "Disc area array offset must match the ABI.");
+	static_assert(offsetof(RendererLightingConstants, shadowLight) == 2352u, "Shadow light selection must extend the multi-light ABI.");
+	static_assert(sizeof(RendererLightingConstants) == 2368u, "Lighting constants must match the multi-light ABI.");
 	static_assert(offsetof(RendererShadowConstants, cascadeSplits) == 384u, "Cascade splits must follow six shadow matrices.");
 	static_assert(offsetof(RendererShadowConstants, shadowInfo) == 400u, "Shadow info offset must match GLSL std140.");
 	static_assert(offsetof(RendererShadowConstants, pcssParams) == 416u, "PCSS params offset must match GLSL std140.");

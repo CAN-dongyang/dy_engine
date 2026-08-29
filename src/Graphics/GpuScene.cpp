@@ -62,9 +62,7 @@ namespace dy::Graphics
 			textureDesc.height = upload.height;
 			textureDesc.depthOrArraySize = 1;
 			textureDesc.mipLevels = 1;
-			textureDesc.format = textureData.colorSpace == TextureColorSpace::SRGB
-				? RHI::Format::R8G8B8A8_UNORM_SRGB
-				: RHI::Format::R8G8B8A8_UNORM;
+			textureDesc.format = RHI::Format::R8G8B8A8_UNORM;
 			textureDesc.usage = RHI::TextureUsage::ShaderResource;
 
 			slot.texture = device->CreateTexture(textureDesc);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -13,6 +14,7 @@
 #include "Graphics/LightingGpu.h"
 #include "Graphics/Scene.h"
 #include "Graphics/ShadowMath.h"
+#include "Graphics/SkinningPass.h"
 #include "Math/Math.h"
 #include "RHI/IBuffer.h"
 #include "RHI/ICommandList.h"
@@ -78,6 +80,28 @@ namespace
 		return vertexShaderPath != nullptr && pixelShaderPath != nullptr && (!config.enableShadows || shadowVertexShaderPath != nullptr);
 	}
 
+	[[nodiscard]] Math::Bounds3 ComputeShadowBounds(const Scene& scene)
+	{
+		Math::Bounds3 bounds = {};
+		const uint32_t entityCount = scene.GetEntityCount();
+		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		{
+			const EntityID entity = static_cast<EntityID>(entityIndex);
+			const RenderFlags& flags = scene.GetRenderFlags(entity);
+			if(!flags.castShadow && !flags.receiveShadow) continue;
+
+			const MeshID meshId = scene.GetEntityMesh(entity);
+			if(!IsValid(meshId)) continue;
+
+			const MeshData& mesh = scene.GetMesh(meshId);
+			const Transform& transform = scene.GetTransform(entity);
+			for(const Vertex& vertex : mesh.vertices)
+			{
+				bounds.Include(Math::TransformPoint(transform.worldMatrix, vertex.position));
+			}
+		}
+		return bounds;
+	}
 }
 
 Renderer::Renderer(RendererBindingMode bindingMode)
@@ -111,9 +135,7 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 		config.bindingMode == RendererBindingMode::PerDrawBind &&
 		config.vertexShaderPath == nullptr &&
 		config.pixelShaderPath == nullptr &&
-		config.shadowVertexShaderPath == nullptr &&
-		config.toneMapVertexShaderPath == nullptr &&
-		config.toneMapPixelShaderPath == nullptr)
+		config.shadowVertexShaderPath == nullptr)
 	{
 		effectiveConfig = m_config;
 	}
@@ -164,15 +186,41 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 		m_toneMapVertexShaderSource = ReadBinaryFile(m_config.toneMapVertexShaderPath);
 		m_toneMapPixelShaderSource = ReadBinaryFile(m_config.toneMapPixelShaderPath);
 	}
+	m_computeSkinningShaderSource.clear();
+	const bool computeConfigurationSupported =
+		m_config.bindingMode == RendererBindingMode::PerDrawBind
+		&& device->SupportsComputeSkinning()
+		&& m_config.computeSkinningShaderPath != nullptr;
+	const SkinningExecutionDecision skinningDecision = ResolveSkinningExecutionMode(
+		m_config.skinningExecutionMode,
+		computeConfigurationSupported);
+	m_activeSkinningExecutionMode = skinningDecision.active;
+	if(m_activeSkinningExecutionMode == SkinningExecutionMode::ComputePreSkin)
+	{
+		std::ifstream computeShaderFile(m_config.computeSkinningShaderPath, std::ios::binary);
+		if(computeShaderFile.good())
+		{
+			computeShaderFile.close();
+			m_computeSkinningShaderSource = ReadBinaryFile(m_config.computeSkinningShaderPath);
+		}
+		else
+		{
+			m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
+			std::fprintf(stderr, "Compute skinning shader unavailable; falling back to vertex-shader skinning.\n");
+		}
+	}
+	else if(skinningDecision.fellBack)
+	{
+		std::fprintf(stderr, "Compute skinning unsupported for this renderer configuration; falling back to vertex-shader skinning.\n");
+	}
 
 	m_clipYFlip = device->RequiresClipSpaceYFlip();
 
 	BuildRenderPassPlan();
 	BuildPipelineStates(device);
+	BuildRenderPassPlan();
 	m_path = CreateRenderPath(m_config.bindingMode);
-	return m_pipeline != nullptr &&
-		m_path != nullptr &&
-		(!m_config.enableHdrRendering || m_toneMapPipeline != nullptr);
+	return m_pipeline != nullptr && m_path != nullptr && (!m_config.enableHdrRendering || m_toneMapPipeline != nullptr);
 }
 
 void Renderer::SetCamera(const CameraDesc& camera)
@@ -243,11 +291,16 @@ void Renderer::Shutdown(RHI::IDevice* device)
 	m_vertexShaderSource.clear();
 	m_pixelShaderSource.clear();
 	m_shadowVertexShaderSource.clear();
+	m_computeSkinningShaderSource.clear();
 	m_toneMapVertexShaderSource.clear();
 	m_toneMapPixelShaderSource.clear();
 	m_renderPasses.clear();
 
-	m_lightingBuffers.Shutdown(device);
+	if(m_lightingBuffer != nullptr)
+	{
+		device->DestroyBuffer(m_lightingBuffer);
+		m_lightingBuffer = nullptr;
+	}
 	if(m_depthStencilTarget != nullptr)
 	{
 		device->DestroyTexture(m_depthStencilTarget);
@@ -264,11 +317,20 @@ void Renderer::Shutdown(RHI::IDevice* device)
 		m_shadowDepthTarget = nullptr;
 		m_shadowDescriptorIndex = 0xFFFFFFFFu;
 	}
-	m_shadowMatrixBuffers.Shutdown(device);
+	if(m_shadowMatrixBuffer != nullptr)
+	{
+		device->DestroyBuffer(m_shadowMatrixBuffer);
+		m_shadowMatrixBuffer = nullptr;
+	}
 	if(m_shadowPipeline != nullptr)
 	{
 		device->DestroyPipelineState(m_shadowPipeline);
 		m_shadowPipeline = nullptr;
+	}
+	if(m_skinningPipeline != nullptr)
+	{
+		device->DestroyPipelineState(m_skinningPipeline);
+		m_skinningPipeline = nullptr;
 	}
 	if(m_toneMapPipeline != nullptr)
 	{
@@ -280,6 +342,7 @@ void Renderer::Shutdown(RHI::IDevice* device)
 		device->DestroyPipelineState(m_pipeline);
 		m_pipeline = nullptr;
 	}
+	m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
 }
 
 void Renderer::Render(const Scene& scene, RHI::IDevice* device)
@@ -295,15 +358,14 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	RenderPathContext context = {};
 	context.config = &m_config;
 	context.pipeline = m_pipeline;
+	context.skinningPipeline = m_skinningPipeline;
+	context.skinningExecutionMode = m_activeSkinningExecutionMode;
 	context.gpuScene = &m_gpuScene;
 	context.materialStates = &m_materialStates;
 	EnsureDepthStencilTarget(device);
 	EnsureHdrColorTarget(device);
 	context.mainColorTarget = m_config.enableHdrRendering ? m_hdrColorTarget : nullptr;
-	context.deferSubmit =
-		m_config.enableHdrRendering &&
-		m_hdrColorTarget != nullptr &&
-		m_toneMapPipeline != nullptr;
+	context.deferSubmit = m_config.enableHdrRendering && m_hdrColorTarget != nullptr && m_toneMapPipeline != nullptr;
 	context.depthStencil = m_depthStencilTarget;
 	m_path->PrepareResources(scene, device, context);
 
@@ -312,9 +374,8 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	// 그림자 '깊이 패스'는 백엔드가 파이프라인 enableShadowPass 로 내부 처리한다.
 	UpdateShadowBuffer(scene, device);
 	UpdateLightingBuffer(scene, device);
-	const uint32_t frameIndex = device->GetCurrentFrameIndex();
-	context.lightingBuffer = m_lightingBuffers.Get(frameIndex);
-	context.shadowMatrixBuffer = m_shadowMatrixBuffers.Get(frameIndex);
+	context.lightingBuffer = m_lightingBuffer;
+	context.shadowMatrixBuffer = m_shadowMatrixBuffer;
 
 	// 명시적 그림자 패스가 필요한 백엔드(D3D12)면 깊이타겟/PSO 를 컨텍스트에 넣는다.
 	// RenderPath 가 메인 패스 전에 깊이 전용 패스를 기록한다(Vulkan 은 내부 처리하므로 비워둠).
@@ -333,7 +394,11 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	for(const RenderPassDesc& pass : m_renderPasses)
 	{
 		if(!pass.enabled) continue;
-		if(pass.kind == RenderPassKind::MainForward && pass.work == RenderPassWork::Graphics)
+		if(pass.kind == RenderPassKind::Skinning && pass.work == RenderPassWork::Compute)
+		{
+			m_path->RecordSkinningPass(scene, device, context);
+		}
+		else if(pass.kind == RenderPassKind::MainForward && pass.work == RenderPassWork::Graphics)
 		{
 			m_path->RecordMainPass(scene, device, context);
 		}
@@ -343,6 +408,19 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
 {
+	const RHI::GraphicsResourceProfile automaticResourceProfile = [this]()
+	{
+		switch(m_config.bindingMode)
+		{
+		case RendererBindingMode::BatchedBind: return RHI::GraphicsResourceProfile::Batched;
+		case RendererBindingMode::Bindless: return RHI::GraphicsResourceProfile::Bindless;
+		case RendererBindingMode::PerDrawBind: return RHI::GraphicsResourceProfile::PerDrawSkin;
+		}
+		return RHI::GraphicsResourceProfile::PerDrawSkin;
+	}();
+	const RHI::GraphicsResourceProfile resourceProfile = m_config.overrideResourceProfile
+		? m_config.resourceProfile
+		: automaticResourceProfile;
 	// 렌더 타깃 포맷은 실제 백버퍼에서 파생한다(단일 진실원). 이래야 PSO 가 실제 타깃과
 	// 항상 일치하고, 백엔드별 스왑체인 포맷 불일치(감마 차이)가 생기지 않는다.
 	if(RHI::ITexture* backBuffer = device->GetBackBuffer())
@@ -366,6 +444,7 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	desc.wireframe = false;
 	desc.enableShadowPass = IsShadowEnabled();
 	desc.enableBindlessTextures = m_config.enableBindlessTextures;
+	desc.resourceProfile = resourceProfile;
 	desc.shadowMapResolution = m_config.shadowMap.resolution;
 	desc.shadowVertexShader = m_shadowVertexShaderSource.empty() ? nullptr : m_shadowVertexShaderSource.data();
 	desc.shadowVertexShaderSize = m_shadowVertexShaderSource.size();
@@ -384,7 +463,22 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 			: RHI::Format::R8G8B8A8_UNORM;
 		toneMapDesc.depthStencilFormat = RHI::Format::Unknown;
 		toneMapDesc.depthEnable = false;
+		toneMapDesc.resourceProfile = RHI::GraphicsResourceProfile::PerDrawSkin;
 		m_toneMapPipeline = device->CreateGraphicsPipeline(toneMapDesc);
+	}
+	if(m_activeSkinningExecutionMode == SkinningExecutionMode::ComputePreSkin)
+	{
+		RHI::ComputePipelineDesc computeDesc = {};
+		computeDesc.computeShader = m_computeSkinningShaderSource.data();
+		computeDesc.computeShaderSize = m_computeSkinningShaderSource.size();
+		computeDesc.storageBufferCount = 4u;
+		computeDesc.inlineConstantSize = 2u * static_cast<uint32_t>(sizeof(uint32_t));
+		m_skinningPipeline = device->CreateComputePipeline(computeDesc);
+		if(m_skinningPipeline == nullptr)
+		{
+			m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
+			std::fprintf(stderr, "Compute skinning pipeline creation failed; falling back to vertex-shader skinning.\n");
+		}
 	}
 
 	// 백엔드가 그림자 깊이 패스를 내부 처리하지 못하면(D3D12) Graphics 가 명시적으로
@@ -409,6 +503,7 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 		shadowDesc.depthEnable = true;
 		shadowDesc.enableShadowPass = false;
 		shadowDesc.enableBindlessTextures = m_config.enableBindlessTextures;
+		shadowDesc.resourceProfile = resourceProfile;
 		shadowDesc.shadowMapResolution = m_config.shadowMap.resolution;
 		shadowDesc.depthBiasSlope = 1.75f; // Vulkan 그림자 파이프라인과 유사한 슬로프 바이어스
 
@@ -420,6 +515,12 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 void Renderer::BuildRenderPassPlan()
 {
 	m_renderPasses.clear();
+	m_renderPasses.push_back(RenderPassDesc{
+		RenderPassKind::Skinning,
+		RenderPassWork::Compute,
+		"Skinning",
+		m_activeSkinningExecutionMode == SkinningExecutionMode::ComputePreSkin
+	});
 	m_renderPasses.push_back(RenderPassDesc{
 		RenderPassKind::Shadow,
 		RenderPassWork::PrepareOnly,
@@ -486,21 +587,14 @@ void Renderer::EnsureHdrColorTarget(RHI::IDevice* device)
 		}
 		return;
 	}
-
 	RHI::ITexture* backBuffer = device->GetBackBuffer();
 	if(backBuffer == nullptr || backBuffer->GetWidth() == 0u || backBuffer->GetHeight() == 0u) return;
-	const bool recreate =
-		m_hdrColorTarget == nullptr ||
-		m_hdrColorTarget->GetWidth() != backBuffer->GetWidth() ||
-		m_hdrColorTarget->GetHeight() != backBuffer->GetHeight() ||
-		m_hdrColorTarget->GetFormat() != RHI::Format::R16G16B16A16_FLOAT;
+	const bool recreate = m_hdrColorTarget == nullptr
+		|| m_hdrColorTarget->GetWidth() != backBuffer->GetWidth()
+		|| m_hdrColorTarget->GetHeight() != backBuffer->GetHeight()
+		|| m_hdrColorTarget->GetFormat() != RHI::Format::R16G16B16A16_FLOAT;
 	if(!recreate) return;
-
-	if(m_hdrColorTarget != nullptr)
-	{
-		device->DestroyTexture(m_hdrColorTarget);
-		m_hdrColorTarget = nullptr;
-	}
+	if(m_hdrColorTarget != nullptr) device->DestroyTexture(m_hdrColorTarget);
 	RHI::TextureDesc hdrDesc = {};
 	hdrDesc.width = backBuffer->GetWidth();
 	hdrDesc.height = backBuffer->GetHeight();
@@ -517,7 +611,6 @@ void Renderer::RecordToneMapPass(RHI::IDevice* device)
 	RHI::ICommandList* commandList = device->AcquireCommandList();
 	RHI::ITexture* backBuffer = device->GetBackBuffer();
 	if(commandList == nullptr || backBuffer == nullptr) return;
-
 	commandList->SetRenderTargets(1u, &backBuffer, nullptr);
 	commandList->ClearColor(backBuffer, 0.0f, 0.0f, 0.0f, 1.0f);
 	commandList->BindGraphicsPipeline(m_toneMapPipeline);
@@ -620,68 +713,53 @@ void Renderer::UpdateMaterialStates(const Scene& scene)
 
 void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 {
-	if(m_lightingBuffers.GetFrameCount() == 0u)
+	if(m_lightingBuffer == nullptr)
 	{
-		if(!m_lightingBuffers.Initialize(
-			device,
-			device->GetDesc().maxFramesInFlight,
-			RHI::BufferDesc{
+		m_lightingBuffer = device->CreateBuffer(RHI::BufferDesc{
 			static_cast<uint32_t>(sizeof(Layout::RendererLightingConstants)),
 			static_cast<uint32_t>(sizeof(Layout::RendererLightingConstants)),
 			RHI::BufferUsage::Constant
-			})) return;
+		});
 	}
-	RHI::IBuffer* lightingBuffer = m_lightingBuffers.Get(device->GetCurrentFrameIndex());
-	if(lightingBuffer == nullptr) return;
+	if(m_lightingBuffer == nullptr) return;
 
-	const Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(
-		scene,
-		m_config,
-		IsShadowEnabled());
+	RendererDesc lightingConfig = m_config;
+	lightingConfig.enableShadows = IsShadowEnabled();
+	Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(scene, lightingConfig);
 
-	void* data = lightingBuffer->Map(0);
+	void* data = m_lightingBuffer->Map(0);
 	if(data != nullptr)
 	{
 		std::memcpy(data, &lighting, sizeof(lighting));
-		lightingBuffer->Unmap();
+		m_lightingBuffer->Unmap();
 	}
 }
 
 void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 {
-	if(m_shadowMatrixBuffers.GetFrameCount() == 0u)
+	if(m_shadowMatrixBuffer == nullptr)
 	{
-		if(!m_shadowMatrixBuffers.Initialize(
-			device,
-			device->GetDesc().maxFramesInFlight,
-			RHI::BufferDesc{
+		m_shadowMatrixBuffer = device->CreateBuffer(RHI::BufferDesc{
 			static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)),
 			static_cast<uint32_t>(sizeof(Layout::RendererShadowConstants)),
 			RHI::BufferUsage::Constant
-			})) return;
+		});
 	}
-	RHI::IBuffer* shadowMatrixBuffer = m_shadowMatrixBuffers.Get(device->GetCurrentFrameIndex());
-	if(shadowMatrixBuffer == nullptr) return;
+	if(m_shadowMatrixBuffer == nullptr) return;
 
-	ShadowLightSelection shadowSelection;
-	[[maybe_unused]] const Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(
-		scene,
-		m_config,
-		IsShadowEnabled(),
-		&shadowSelection);
 	Layout::RendererShadowConstants shadow = {};
 	for(Math::float4x4& matrix : shadow.lightViewProjectionMatrices) matrix = Math::float4x4::Identity();
 	shadow.cameraViewMatrix = m_config.cameraViewMatrix;
-	float sourceRadius = std::max(m_config.shadowLightRadius, 0.0f);
+	ShadowLightSelection shadowSelection;
+	[[maybe_unused]] const Layout::RendererLightingConstants lighting = BuildRendererLightingConstants(
+		scene, m_config, IsShadowEnabled(), &shadowSelection);
 	float shadowNearPlane = std::max(m_config.shadowMap.nearPlane, 0.0001f);
 	if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Directional)
 	{
 		Math::float3 lightDirection = m_config.directionalLightDirection;
-		if(scene.GetDirectionalLightCount() > 0u)
+		if(!scene.DirectionalLights().empty())
 		{
-			const DirectionalLight& directional = scene.GetDirectionalLight(shadowSelection.sceneIndex);
-			lightDirection = directional.direction;
-			sourceRadius = std::tan(std::max(directional.angularRadiusRadians, 0.0f));
+			lightDirection = scene.GetDirectionalLight(shadowSelection.sceneIndex).direction;
 		}
 		CameraFrustumDesc camera;
 		camera.position = m_config.cameraPosition;
@@ -702,52 +780,60 @@ void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 		{
 			shadow.lightViewProjectionMatrices[index] = cascades.viewProjections[index];
 		}
-		shadow.cascadeSplits = Math::float4(
-			cascades.splits[0], cascades.splits[1], cascades.splits[2], cascades.splits[3]);
-		shadow.shadowInfo = Math::float4(
-			static_cast<float>(ShadowLightType::Directional),
-			static_cast<float>(cascades.count),
-			2.0f,
-			2.0f);
+		shadow.cascadeSplits = Math::float4(cascades.splits[0], cascades.splits[1], cascades.splits[2], cascades.splits[3]);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Directional), static_cast<float>(cascades.count), 2.0f, 2.0f);
 	}
 	else if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Spot)
 	{
 		const SpotLight& spot = scene.GetSpotLight(shadowSelection.sceneIndex);
 		ShadowMapDesc shadowMap = m_config.shadowMap;
-		shadowMap.farPlane = std::max(spot.rangeMeters, shadowMap.nearPlane + 0.1f);
+		shadowMap.farPlane = std::max(spot.range, shadowMap.nearPlane + 0.1f);
 		shadowMap.spotFovYRadians = std::clamp(spot.outerConeRadians * 2.0f, 0.1f, 3.0f);
 		shadow.lightViewProjectionMatrices[0] = ComputeSpotLightViewProj(spot.position, spot.direction, shadowMap);
-		shadow.shadowInfo = Math::float4(
-			static_cast<float>(ShadowLightType::Spot), 1.0f, 1.0f, 1.0f);
-		sourceRadius = std::max(spot.sourceRadiusMeters, 0.0f);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Spot), 1.0f, 1.0f, 1.0f);
 		shadowNearPlane = std::max(shadowMap.nearPlane, 0.0001f);
 	}
 	else if(IsShadowEnabled() && shadowSelection.type == ShadowLightType::Point)
 	{
 		const PointLight& point = scene.GetPointLight(shadowSelection.sceneIndex);
-		const float farPlane = std::max(point.rangeMeters, shadowNearPlane + 0.1f);
-		shadow.lightViewProjectionMatrices = ComputePointLightViewProjections(
-			point.position, shadowNearPlane, farPlane);
-		shadow.shadowInfo = Math::float4(
-			static_cast<float>(ShadowLightType::Point), 6.0f, 3.0f, 2.0f);
-		sourceRadius = std::max(point.sourceRadiusMeters, 0.0f);
+		const float farPlane = std::max(point.range, shadowNearPlane + 0.1f);
+		shadow.lightViewProjectionMatrices = ComputePointLightViewProjections(point.position, shadowNearPlane, farPlane);
+		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Point), 6.0f, 3.0f, 2.0f);
 	}
-	else
+	else shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::None), 0.0f, 1.0f, 1.0f);
+	// D3D12의 기존 명시적 shadow pass는 단일 뷰만 기록하므로 첫 행렬은 기존 전체 범위 방식으로 유지한다.
+	if(m_useExplicitShadowPass && IsShadowEnabled())
 	{
-		shadow.shadowInfo = Math::float4(
-			static_cast<float>(ShadowLightType::None), 0.0f, 1.0f, 1.0f);
+		const Math::Bounds3 bounds = m_config.autoFitShadowMap ? ComputeShadowBounds(scene) : Math::Bounds3{};
+		if(shadowSelection.type == ShadowLightType::Directional)
+		{
+			Math::float3 direction = m_config.directionalLightDirection;
+			if(!scene.DirectionalLights().empty()) direction = scene.GetDirectionalLight(shadowSelection.sceneIndex).direction;
+			ShadowMapDesc map = m_config.shadowMap;
+			if(bounds.valid) map = FitDirectionalShadowMapToBounds(direction, map, bounds.min, bounds.max, m_config.shadowBoundsPadding);
+			shadow.lightViewProjectionMatrices[0] = ComputeDirectionalLightViewProj(direction, map);
+		}
+		else if(shadowSelection.type == ShadowLightType::Point)
+		{
+			const PointLight& point = scene.GetPointLight(shadowSelection.sceneIndex);
+			ShadowMapDesc map = m_config.shadowMap;
+			map.farPlane = std::max(map.farPlane, point.range);
+			Math::float3 direction = Math::NormalizeOr(point.direction, Math::float3(0.0f, 0.0f, -1.0f));
+			if(bounds.valid) direction = Math::NormalizeOr(bounds.Center() - point.position, direction);
+			shadow.lightViewProjectionMatrices[0] = ComputeSpotLightViewProj(point.position, direction, map);
+		}
 	}
 	shadow.pcssParams = Math::float4(
-		sourceRadius,
+		std::max(m_config.shadowLightRadius, 0.0f),
 		std::max(m_config.shadowBlockerSearchRadius, 0.0f),
 		std::max(m_config.shadowMaxFilterRadius, 1.0f),
 		shadowNearPlane);
 
-	void* data = shadowMatrixBuffer->Map(0);
+	void* data = m_shadowMatrixBuffer->Map(0);
 	if(data != nullptr)
 	{
 		std::memcpy(data, &shadow, sizeof(shadow));
-		shadowMatrixBuffer->Unmap();
+		m_shadowMatrixBuffer->Unmap();
 	}
 }
 

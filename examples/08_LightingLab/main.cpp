@@ -117,15 +117,14 @@ int main(int argc, char** argv)
 
 		Graphics::DirectionalLight sun = {};
 		sun.direction = Math::float3(0.45f, 0.65f, 0.62f);
-		sun.illuminanceLux = 1.5f;
-		sun.angularRadiusRadians = 0.0093f;
+		sun.intensity = 1.5f;
 		(void)scene.CreateDirectionalLight(sun);
 
 		Graphics::PointLight point = {};
 		point.position = Math::float3(0.0f, -2.5f, 2.4f);
 		point.color = Math::float3(1.0f, 0.22f, 0.08f);
-		point.luminousIntensityCandela = 24.0f;
-		point.rangeMeters = 10.0f;
+		point.intensity = 24.0f;
+		point.range = 10.0f;
 		point.castShadow = false;
 		(void)scene.CreatePointLight(point);
 
@@ -133,8 +132,8 @@ int main(int argc, char** argv)
 		spot.position = Math::float3(0.0f, 3.5f, 4.0f);
 		spot.direction = Math::float3(0.0f, -0.75f, -1.0f);
 		spot.color = Math::float3(0.18f, 0.35f, 1.0f);
-		spot.luminousIntensityCandela = 38.0f;
-		spot.rangeMeters = 12.0f;
+		spot.intensity = 38.0f;
+		spot.range = 12.0f;
 		spot.innerConeRadians = 0.30f;
 		spot.outerConeRadians = 0.52f;
 		spot.castShadow = false;
@@ -145,17 +144,17 @@ int main(int argc, char** argv)
 		rect.direction = Math::float3(0.7f, 0.1f, -1.0f);
 		rect.up = Math::float3(0.0f, 1.0f, 0.0f);
 		rect.color = Math::float3(1.0f, 0.72f, 0.42f);
-		rect.luminanceNits = 28.0f;
-		rect.widthMeters = 2.4f;
-		rect.heightMeters = 1.2f;
+		rect.intensity = 28.0f;
+		rect.width = 2.4f;
+		rect.height = 1.2f;
 		(void)scene.CreateRectAreaLight(rect);
 
 		Graphics::DiscAreaLight disc = {};
 		disc.position = Math::float3(3.0f, 0.5f, 3.0f);
 		disc.direction = Math::float3(-0.7f, -0.1f, -1.0f);
 		disc.color = Math::float3(0.35f, 0.62f, 1.0f);
-		disc.luminanceNits = 32.0f;
-		disc.radiusMeters = 0.9f;
+		disc.intensity = 32.0f;
+		disc.radius = 0.9f;
 		(void)scene.CreateDiscAreaLight(disc);
 
 		const auto start = std::chrono::steady_clock::now();

@@ -18,7 +18,7 @@ layout(set = 0, binding = DY_RENDERER_BINDING_OCCLUSION_TEXTURE) uniform sampler
 layout(set = 0, binding = DY_RENDERER_BINDING_EMISSIVE_TEXTURE) uniform sampler2D emissiveTexture;
 
 struct RendererDirectionalLight {
-    vec4 directionIlluminance;
+    vec4 directionIntensity;
     vec4 color;
 };
 
@@ -35,33 +35,37 @@ struct RendererSpotLight {
 };
 
 struct RendererRectAreaLight {
-    vec4 positionLuminance;
+    vec4 positionIntensity;
     vec4 directionWidth;
     vec4 upHeight;
     vec4 color;
 };
 
 struct RendererDiscAreaLight {
-    vec4 positionLuminance;
+    vec4 positionIntensity;
     vec4 directionRadius;
     vec4 up;
     vec4 color;
 };
 
-layout(std140, set = 0, binding = DY_RENDERER_BINDING_LIGHTING_CONSTANTS) uniform RendererLighting {
+layout(set = 0, binding = DY_RENDERER_BINDING_LIGHTING_CONSTANTS) uniform RendererLighting {
     vec4 cameraPosition;
+    vec4 directionalLightDirection;
+    vec4 directionalLightColor;
     vec4 ambientColor;
     vec4 shadowParams;
     vec4 pbrParams;
     vec4 environmentColor;
+    vec4 pointLightPositionRange;
+    vec4 pointLightColorIntensity;
     vec4 lightCounts;
-    vec4 shadowLight;
     vec4 areaLightCounts;
     RendererDirectionalLight directionalLights[DY_RENDERER_MAX_DIRECTIONAL_LIGHTS];
     RendererPointLight pointLights[DY_RENDERER_MAX_POINT_LIGHTS];
     RendererSpotLight spotLights[DY_RENDERER_MAX_SPOT_LIGHTS];
     RendererRectAreaLight rectAreaLights[DY_RENDERER_MAX_RECT_AREA_LIGHTS];
     RendererDiscAreaLight discAreaLights[DY_RENDERER_MAX_DISC_AREA_LIGHTS];
+    vec4 shadowLight;
 } lighting;
 
 layout(std140, set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
@@ -80,9 +84,10 @@ layout(std140, set = 0, binding = DY_VULKAN_BINDING_DRAW_CONSTANTS) uniform Vulk
     int vertexOffset;
     uint firstVertex;
     vec3 emissiveColor;
-    float baseColorTextureIndex;
+    float emissiveTextureIndex;
     vec4 baseColor;
     vec4 materialParams;
+    vec4 textureIndices;
 } pushConstants;
 
 const float PI = 3.14159265359;
@@ -137,144 +142,6 @@ vec3 GetNormal() {
     return normalize(tbn * tangentNormal);
 }
 
-int ResolvePointShadowFace(vec3 fromLight) {
-    vec3 absoluteDirection = abs(fromLight);
-    if (absoluteDirection.x >= absoluteDirection.y && absoluteDirection.x >= absoluteDirection.z) {
-        return fromLight.x >= 0.0 ? 0 : 1;
-    }
-    if (absoluteDirection.y >= absoluteDirection.x && absoluteDirection.y >= absoluteDirection.z) {
-        return fromLight.y >= 0.0 ? 2 : 3;
-    }
-    return fromLight.z >= 0.0 ? 4 : 5;
-}
-
-int ResolveShadowViewIndex(vec3 worldPosition, vec3 lightDir) {
-    int shadowType = int(shadowMatrix.shadowInfo.x + 0.5);
-    int viewCount = clamp(int(shadowMatrix.shadowInfo.y + 0.5), 0, 6);
-    if (shadowType == 1) {
-        float viewDepth = max(-(shadowMatrix.cameraViewMatrix * vec4(worldPosition, 1.0)).z, 0.0);
-        int cascadeIndex = 0;
-        for (int cascade = 0; cascade < min(viewCount, 4); ++cascade) {
-            cascadeIndex = cascade;
-            if (viewDepth <= shadowMatrix.cascadeSplits[cascade]) {
-                break;
-            }
-        }
-        return cascadeIndex;
-    }
-    if (shadowType == 2) {
-        return ResolvePointShadowFace(-lightDir);
-    }
-    return 0;
-}
-
-vec2 ShadowAtlasUv(vec2 localUv, int viewIndex, out vec2 tileMin, out vec2 tileMax) {
-    int columns = max(int(shadowMatrix.shadowInfo.z + 0.5), 1);
-    int rows = max(int(shadowMatrix.shadowInfo.w + 0.5), 1);
-    vec2 tileScale = vec2(1.0 / float(columns), 1.0 / float(rows));
-    ivec2 tile = ivec2(viewIndex % columns, viewIndex / columns);
-    tileMin = vec2(tile) * tileScale;
-    tileMax = tileMin + tileScale;
-    return tileMin + localUv * tileScale;
-}
-
-float FindAverageBlockerDepth(
-    vec2 atlasUv,
-    vec2 tileMin,
-    vec2 tileMax,
-    float receiverDepth,
-    float bias,
-    int searchRadius) {
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
-    vec2 safeMin = tileMin + texelSize * 0.5;
-    vec2 safeMax = tileMax - texelSize * 0.5;
-    float blockerDepthSum = 0.0;
-    int blockerCount = 0;
-    for (int y = -4; y <= 4; ++y) {
-        for (int x = -4; x <= 4; ++x) {
-            if (abs(x) > searchRadius || abs(y) > searchRadius) {
-                continue;
-            }
-            vec2 sampleUv = clamp(atlasUv + vec2(x, y) * texelSize, safeMin, safeMax);
-            float sampledDepth = texture(shadowMap, sampleUv).r;
-            if (sampledDepth < receiverDepth - bias) {
-                blockerDepthSum += sampledDepth;
-                blockerCount += 1;
-            }
-        }
-    }
-    return blockerCount > 0 ? blockerDepthSum / float(blockerCount) : -1.0;
-}
-
-float CalculateShadowVisibility(vec3 worldPosition, vec3 normal, vec3 lightDir) {
-    if (lighting.shadowLight.w < 0.5 ||
-        (int(pushConstants.drawMode + 0.5) & DY_RENDERER_TEXTURE_FLAG_RECEIVE_SHADOW) == 0) {
-        return 1.0;
-    }
-
-    int viewIndex = ResolveShadowViewIndex(worldPosition, lightDir);
-    vec4 lightSpacePosition = shadowMatrix.lightViewProjectionMatrices[viewIndex] * vec4(worldPosition, 1.0);
-    if (abs(lightSpacePosition.w) <= 0.000001) {
-        return 1.0;
-    }
-    vec3 ndc = lightSpacePosition.xyz / lightSpacePosition.w;
-    vec2 localUv = ndc.xy * 0.5 + 0.5;
-    if (localUv.x < 0.0 || localUv.x > 1.0 ||
-        localUv.y < 0.0 || localUv.y > 1.0 ||
-        ndc.z < 0.0 || ndc.z > 1.0) {
-        return 1.0;
-    }
-
-    float ndotl = max(dot(normal, lightDir), 0.0);
-    float constantBias = max(lighting.shadowParams.x, 0.0);
-    float slopeBias = max(lighting.shadowParams.y, 0.0) * (1.0 - ndotl);
-    float normalBias = max(lighting.shadowParams.z, 0.0) * (1.0 - ndotl);
-    float bias = max(slopeBias, constantBias) + normalBias;
-
-    vec2 tileMin;
-    vec2 tileMax;
-    vec2 atlasUv = ShadowAtlasUv(localUv, viewIndex, tileMin, tileMax);
-    int baseRadius = clamp(int(lighting.shadowParams.w + 0.5), 0, 4);
-    int blockerSearchRadius = clamp(
-        int(shadowMatrix.pcssParams.y + 0.5) + baseRadius, 1, 4);
-    float averageBlockerDepth = FindAverageBlockerDepth(
-        atlasUv, tileMin, tileMax, ndc.z, bias, blockerSearchRadius);
-
-    float filterRadius = float(baseRadius);
-    if (averageBlockerDepth > 0.0) {
-        int columns = max(int(shadowMatrix.shadowInfo.z + 0.5), 1);
-        int rows = max(int(shadowMatrix.shadowInfo.w + 0.5), 1);
-        vec2 atlasSize = vec2(textureSize(shadowMap, 0));
-        float tileResolution = min(atlasSize.x / float(columns), atlasSize.y / float(rows));
-        float penumbra = max((ndc.z - averageBlockerDepth) / max(averageBlockerDepth, 0.0001), 0.0);
-        filterRadius = clamp(
-            filterRadius + penumbra * max(shadowMatrix.pcssParams.x, 0.0) * tileResolution,
-            filterRadius,
-            max(shadowMatrix.pcssParams.z, 1.0));
-    }
-    int integerFilterRadius = clamp(int(ceil(filterRadius)), 0, 8);
-
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
-    vec2 safeMin = tileMin + texelSize * 0.5;
-    vec2 safeMax = tileMax - texelSize * 0.5;
-    float visibility = 0.0;
-    int sampleCount = 0;
-    for (int y = -8; y <= 8; ++y) {
-        for (int x = -8; x <= 8; ++x) {
-            if (abs(x) > integerFilterRadius || abs(y) > integerFilterRadius) {
-                continue;
-            }
-            vec2 sampleUv = clamp(atlasUv + vec2(x, y) * texelSize, safeMin, safeMax);
-            float sampledDepth = texture(shadowMap, sampleUv).r;
-            visibility += (ndc.z - bias) > sampledDepth ? 0.0 : 1.0;
-            sampleCount += 1;
-        }
-    }
-    visibility /= max(float(sampleCount), 1.0);
-    float strength = clamp(lighting.shadowLight.z, 0.0, 1.0);
-    return mix(1.0, visibility, strength);
-}
-
 float PunctualAttenuation(float distanceToLight, float range) {
     if (range <= 0.0 || distanceToLight >= range) {
         return 0.0;
@@ -306,7 +173,6 @@ vec3 EvaluateDirectLight(
     if (ndotl <= 0.0 || ndotv <= 0.0 || visibility <= 0.0) {
         return vec3(0.0);
     }
-
     vec3 halfwayVector = viewDir + lightDir;
     float halfwayLengthSquared = dot(halfwayVector, halfwayVector);
     if (halfwayLengthSquared <= 0.000001) {
@@ -340,8 +206,7 @@ vec3 EvaluateAreaSample(
     vec3 lightDir = toLight * inversesqrt(distanceSquared);
     float emitterCosine = max(dot(emitterDirection, -lightDir), 0.0);
     vec3 incidentIlluminance = emittedRadiance * emitterCosine * sampleArea / distanceSquared;
-    return EvaluateDirectLight(
-        normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, 1.0);
+    return EvaluateDirectLight(normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, 1.0);
 }
 
 vec3 EvaluateRectAreaLight(
@@ -358,16 +223,13 @@ vec3 EvaluateRectAreaLight(
     float width = max(light.directionWidth.w, 0.0);
     float height = max(light.upHeight.w, 0.0);
     float sampleArea = width * height * 0.25;
-    vec3 emittedRadiance = light.color.rgb * max(light.positionLuminance.w, 0.0);
+    vec3 emittedRadiance = light.color.rgb * max(light.positionIntensity.w, 0.0);
     vec3 result = vec3(0.0);
     for (int sampleIndex = 0; sampleIndex < 4; ++sampleIndex) {
         float x = (sampleIndex & 1) == 0 ? -0.25 : 0.25;
         float y = (sampleIndex & 2) == 0 ? -0.25 : 0.25;
-        vec3 samplePosition = light.positionLuminance.xyz +
-            emitterRight * (x * width) + emitterUp * (y * height);
-        result += EvaluateAreaSample(
-            normal, viewDir, samplePosition, emitterDirection, emittedRadiance,
-            sampleArea, albedo, metallic, roughness);
+        vec3 samplePosition = light.positionIntensity.xyz + emitterRight * (x * width) + emitterUp * (y * height);
+        result += EvaluateAreaSample(normal, viewDir, samplePosition, emitterDirection, emittedRadiance, sampleArea, albedo, metallic, roughness);
     }
     return result;
 }
@@ -387,19 +249,120 @@ vec3 EvaluateDiscAreaLight(
     emitterUp = normalize(cross(emitterRight, emitterDirection));
     float radius = max(light.directionRadius.w, 0.0);
     float sampleArea = PI * radius * radius / float(sampleCount);
-    vec3 emittedRadiance = light.color.rgb * max(light.positionLuminance.w, 0.0);
+    vec3 emittedRadiance = light.color.rgb * max(light.positionIntensity.w, 0.0);
     vec3 result = vec3(0.0);
     for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
         float normalizedRadius = sqrt((float(sampleIndex) + 0.5) / float(sampleCount));
         float angle = float(sampleIndex) * goldenAngle;
         vec2 discOffset = vec2(cos(angle), sin(angle)) * (normalizedRadius * radius);
-        vec3 samplePosition = light.positionLuminance.xyz +
-            emitterRight * discOffset.x + emitterUp * discOffset.y;
-        result += EvaluateAreaSample(
-            normal, viewDir, samplePosition, emitterDirection, emittedRadiance,
-            sampleArea, albedo, metallic, roughness);
+        vec3 samplePosition = light.positionIntensity.xyz + emitterRight * discOffset.x + emitterUp * discOffset.y;
+        result += EvaluateAreaSample(normal, viewDir, samplePosition, emitterDirection, emittedRadiance, sampleArea, albedo, metallic, roughness);
     }
     return result;
+}
+
+int ResolvePointShadowFace(vec3 fromLight) {
+    vec3 absoluteDirection = abs(fromLight);
+    if (absoluteDirection.x >= absoluteDirection.y && absoluteDirection.x >= absoluteDirection.z) {
+        return fromLight.x >= 0.0 ? 0 : 1;
+    }
+    if (absoluteDirection.y >= absoluteDirection.x && absoluteDirection.y >= absoluteDirection.z) {
+        return fromLight.y >= 0.0 ? 2 : 3;
+    }
+    return fromLight.z >= 0.0 ? 4 : 5;
+}
+
+int ResolveShadowViewIndex(vec3 worldPosition, vec3 lightDir) {
+    int shadowType = int(shadowMatrix.shadowInfo.x + 0.5);
+    int viewCount = clamp(int(shadowMatrix.shadowInfo.y + 0.5), 0, 6);
+    if (shadowType == 1) {
+        float viewDepth = max(-(shadowMatrix.cameraViewMatrix * vec4(worldPosition, 1.0)).z, 0.0);
+        int cascadeIndex = 0;
+        for (int cascade = 0; cascade < min(viewCount, 4); ++cascade) {
+            cascadeIndex = cascade;
+            if (viewDepth <= shadowMatrix.cascadeSplits[cascade]) break;
+        }
+        return cascadeIndex;
+    }
+    if (shadowType == 2) return ResolvePointShadowFace(-lightDir);
+    return 0;
+}
+
+vec2 ShadowAtlasUv(vec2 localUv, int viewIndex, out vec2 tileMin, out vec2 tileMax) {
+    int columns = max(int(shadowMatrix.shadowInfo.z + 0.5), 1);
+    int rows = max(int(shadowMatrix.shadowInfo.w + 0.5), 1);
+    vec2 tileScale = vec2(1.0 / float(columns), 1.0 / float(rows));
+    ivec2 tile = ivec2(viewIndex % columns, viewIndex / columns);
+    tileMin = vec2(tile) * tileScale;
+    tileMax = tileMin + tileScale;
+    return tileMin + localUv * tileScale;
+}
+
+float FindAverageBlockerDepth(vec2 atlasUv, vec2 tileMin, vec2 tileMax, float receiverDepth, float bias, int searchRadius) {
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
+    vec2 safeMin = tileMin + texelSize * 0.5;
+    vec2 safeMax = tileMax - texelSize * 0.5;
+    float blockerDepthSum = 0.0;
+    int blockerCount = 0;
+    for (int y = -4; y <= 4; ++y) {
+        for (int x = -4; x <= 4; ++x) {
+            if (abs(x) > searchRadius || abs(y) > searchRadius) continue;
+            vec2 sampleUv = clamp(atlasUv + vec2(x, y) * texelSize, safeMin, safeMax);
+            float sampledDepth = texture(shadowMap, sampleUv).r;
+            if (sampledDepth < receiverDepth - bias) {
+                blockerDepthSum += sampledDepth;
+                blockerCount += 1;
+            }
+        }
+    }
+    return blockerCount > 0 ? blockerDepthSum / float(blockerCount) : -1.0;
+}
+
+float CalculateShadowVisibility(vec3 worldPosition, vec3 normal, vec3 lightDir) {
+    if (lighting.shadowLight.w < 0.5 ||
+        (int(pushConstants.drawMode + 0.5) & DY_RENDERER_TEXTURE_FLAG_RECEIVE_SHADOW) == 0) return 1.0;
+    int viewIndex = ResolveShadowViewIndex(worldPosition, lightDir);
+    vec4 lightSpacePosition = shadowMatrix.lightViewProjectionMatrices[viewIndex] * vec4(worldPosition, 1.0);
+    if (abs(lightSpacePosition.w) <= 0.000001) return 1.0;
+    vec3 ndc = lightSpacePosition.xyz / lightSpacePosition.w;
+    vec2 localUv = ndc.xy * 0.5 + 0.5;
+    if (localUv.x < 0.0 || localUv.x > 1.0 || localUv.y < 0.0 || localUv.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) return 1.0;
+
+    float ndotl = max(dot(normal, lightDir), 0.0);
+    float bias = max(max(lighting.shadowParams.y, 0.0) * (1.0 - ndotl), max(lighting.shadowParams.x, 0.0))
+        + max(lighting.shadowParams.z, 0.0) * (1.0 - ndotl);
+    vec2 tileMin;
+    vec2 tileMax;
+    vec2 atlasUv = ShadowAtlasUv(localUv, viewIndex, tileMin, tileMax);
+    int baseRadius = clamp(int(lighting.shadowParams.w + 0.5), 0, 4);
+    int searchRadius = clamp(int(shadowMatrix.pcssParams.y + 0.5) + baseRadius, 1, 4);
+    float averageBlockerDepth = FindAverageBlockerDepth(atlasUv, tileMin, tileMax, ndc.z, bias, searchRadius);
+    float filterRadius = float(baseRadius);
+    if (averageBlockerDepth > 0.0) {
+        int columns = max(int(shadowMatrix.shadowInfo.z + 0.5), 1);
+        int rows = max(int(shadowMatrix.shadowInfo.w + 0.5), 1);
+        vec2 atlasSize = vec2(textureSize(shadowMap, 0));
+        float tileResolution = min(atlasSize.x / float(columns), atlasSize.y / float(rows));
+        float penumbra = max((ndc.z - averageBlockerDepth) / max(averageBlockerDepth, 0.0001), 0.0);
+        filterRadius = clamp(filterRadius + penumbra * max(shadowMatrix.pcssParams.x, 0.0) * tileResolution,
+            filterRadius, max(shadowMatrix.pcssParams.z, 1.0));
+    }
+    int integerFilterRadius = clamp(int(ceil(filterRadius)), 0, 8);
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
+    vec2 safeMin = tileMin + texelSize * 0.5;
+    vec2 safeMax = tileMax - texelSize * 0.5;
+    float visibility = 0.0;
+    int sampleCount = 0;
+    for (int y = -8; y <= 8; ++y) {
+        for (int x = -8; x <= 8; ++x) {
+            if (abs(x) > integerFilterRadius || abs(y) > integerFilterRadius) continue;
+            float sampledDepth = texture(shadowMap, clamp(atlasUv + vec2(x, y) * texelSize, safeMin, safeMax)).r;
+            visibility += (ndc.z - bias) > sampledDepth ? 0.0 : 1.0;
+            sampleCount += 1;
+        }
+    }
+    visibility /= max(float(sampleCount), 1.0);
+    return mix(1.0, visibility, clamp(lighting.shadowLight.z, 0.0, 1.0));
 }
 
 vec3 EnvironmentBrdfApproximation(vec3 f0, float roughness, float ndotv) {
@@ -442,27 +405,20 @@ void main() {
     }
 
     vec3 normal = GetNormal();
-    vec3 viewVector = lighting.cameraPosition.xyz - fragWorldPosition;
-    float viewLengthSquared = dot(viewVector, viewVector);
-    vec3 viewDir = viewLengthSquared > 0.000001
-        ? viewVector * inversesqrt(viewLengthSquared)
-        : normal;
+    vec3 viewDir = normalize(lighting.cameraPosition.xyz - fragWorldPosition);
     int shadowType = int(lighting.shadowLight.x + 0.5);
     int shadowIndex = int(lighting.shadowLight.y + 0.5);
     vec3 directLight = vec3(0.0);
-
     int directionalCount = clamp(int(lighting.lightCounts.x + 0.5), 0, DY_RENDERER_MAX_DIRECTIONAL_LIGHTS);
     for (int lightIndex = 0; lightIndex < directionalCount; ++lightIndex) {
         RendererDirectionalLight light = lighting.directionalLights[lightIndex];
-        vec3 lightDir = normalize(light.directionIlluminance.xyz);
-        vec3 incidentIlluminance = light.color.rgb * max(light.directionIlluminance.w, 0.0);
+        vec3 lightDir = normalize(light.directionIntensity.xyz);
         float visibility = shadowType == 1 && shadowIndex == lightIndex
             ? CalculateShadowVisibility(fragWorldPosition, normal, lightDir)
             : 1.0;
-        directLight += EvaluateDirectLight(
-            normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, visibility);
+        directLight += EvaluateDirectLight(normal, viewDir, lightDir,
+            light.color.rgb * max(light.directionIntensity.w, 0.0), albedo, metallic, roughness, visibility);
     }
-
     int pointCount = clamp(int(lighting.lightCounts.y + 0.5), 0, DY_RENDERER_MAX_POINT_LIGHTS);
     for (int lightIndex = 0; lightIndex < pointCount; ++lightIndex) {
         RendererPointLight light = lighting.pointLights[lightIndex];
@@ -472,15 +428,13 @@ void main() {
             continue;
         }
         vec3 lightDir = toLight / distanceToLight;
-        float attenuation = PunctualAttenuation(distanceToLight, light.positionRange.w);
-        vec3 incidentIlluminance = light.colorIntensity.rgb * max(light.colorIntensity.w, 0.0) * attenuation;
         float visibility = shadowType == 2 && shadowIndex == lightIndex
             ? CalculateShadowVisibility(fragWorldPosition, normal, lightDir)
             : 1.0;
-        directLight += EvaluateDirectLight(
-            normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, visibility);
+        vec3 incidentIlluminance = light.colorIntensity.rgb * max(light.colorIntensity.w, 0.0) *
+            PunctualAttenuation(distanceToLight, light.positionRange.w);
+        directLight += EvaluateDirectLight(normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, visibility);
     }
-
     int spotCount = clamp(int(lighting.lightCounts.z + 0.5), 0, DY_RENDERER_MAX_SPOT_LIGHTS);
     for (int lightIndex = 0; lightIndex < spotCount; ++lightIndex) {
         RendererSpotLight light = lighting.spotLights[lightIndex];
@@ -490,32 +444,23 @@ void main() {
             continue;
         }
         vec3 lightDir = toLight / distanceToLight;
-        float distanceAttenuation = PunctualAttenuation(distanceToLight, light.positionRange.w);
-        float cosTheta = dot(-lightDir, normalize(light.directionOuterCos.xyz));
-        float coneAttenuation = SpotConeAttenuation(
-            cosTheta, light.coneParams.x, light.directionOuterCos.w);
-        vec3 incidentIlluminance =
-            light.colorIntensity.rgb * max(light.colorIntensity.w, 0.0) *
-            distanceAttenuation * coneAttenuation;
+        float attenuation = PunctualAttenuation(distanceToLight, light.positionRange.w) *
+            SpotConeAttenuation(dot(-lightDir, normalize(light.directionOuterCos.xyz)),
+                light.coneParams.x, light.directionOuterCos.w);
+        vec3 incidentIlluminance = light.colorIntensity.rgb * max(light.colorIntensity.w, 0.0) * attenuation;
         float visibility = shadowType == 3 && shadowIndex == lightIndex
             ? CalculateShadowVisibility(fragWorldPosition, normal, lightDir)
             : 1.0;
-        directLight += EvaluateDirectLight(
-            normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, visibility);
+        directLight += EvaluateDirectLight(normal, viewDir, lightDir, incidentIlluminance, albedo, metallic, roughness, visibility);
     }
-
     int rectAreaCount = clamp(int(lighting.areaLightCounts.x + 0.5), 0, DY_RENDERER_MAX_RECT_AREA_LIGHTS);
     for (int lightIndex = 0; lightIndex < rectAreaCount; ++lightIndex) {
-        directLight += EvaluateRectAreaLight(
-            lighting.rectAreaLights[lightIndex], normal, viewDir, albedo, metallic, roughness);
+        directLight += EvaluateRectAreaLight(lighting.rectAreaLights[lightIndex], normal, viewDir, albedo, metallic, roughness);
     }
-
     int discAreaCount = clamp(int(lighting.areaLightCounts.y + 0.5), 0, DY_RENDERER_MAX_DISC_AREA_LIGHTS);
     for (int lightIndex = 0; lightIndex < discAreaCount; ++lightIndex) {
-        directLight += EvaluateDiscAreaLight(
-            lighting.discAreaLights[lightIndex], normal, viewDir, albedo, metallic, roughness);
+        directLight += EvaluateDiscAreaLight(lighting.discAreaLights[lightIndex], normal, viewDir, albedo, metallic, roughness);
     }
-
     vec3 f0 = mix(vec3(0.04), albedo, metallic);
     vec3 ambientFresnel = FresnelSchlickRoughness(max(dot(normal, viewDir), 0.0), f0, roughness);
     vec3 ambientDiffuseWeight = (vec3(1.0) - ambientFresnel) * (1.0 - metallic);
@@ -529,11 +474,7 @@ void main() {
     }
     vec3 color = ambient + directLight + emissive;
 
-    if (lighting.pbrParams.w > 0.5) {
-        color = AcesFitted(max(color, vec3(0.0)));
-    }
-    if (lighting.pbrParams.z > 0.5) {
-        color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-    }
+    if (lighting.pbrParams.w > 0.5) color = AcesFitted(max(color, vec3(0.0)));
+    if (lighting.pbrParams.z > 0.5) color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
     outColor = vec4(color, pushConstants.baseColor.a);
 }

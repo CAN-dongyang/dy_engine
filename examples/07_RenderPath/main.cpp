@@ -242,6 +242,11 @@ int main(int argc, char** argv)
 
 		Graphics::RendererDesc cfg = {};
 		cfg.bindingMode = bindingMode;
+		if(bindingMode == Graphics::RendererBindingMode::PerDrawBind)
+		{
+			cfg.overrideResourceProfile = true;
+			cfg.resourceProfile = RHI::GraphicsResourceProfile::Batched;
+		}
 		cfg.vertexShaderPath = vsPath.c_str();
 		cfg.pixelShaderPath = psPath.c_str();
 		cfg.clearColor = Math::float4(0.02f, 0.03f, 0.05f, 1.0f);
@@ -258,7 +263,7 @@ int main(int argc, char** argv)
 
 		Graphics::DirectionalLight light = {};
 		light.direction = Math::float3(0.5f, 0.6f, 0.6f);
-		light.illuminanceLux = 3.5f;
+		light.intensity = 3.5f;
 		light.castShadow = false;
 		const DirectionalLightID lightId = scene.CreateDirectionalLight(light);
 

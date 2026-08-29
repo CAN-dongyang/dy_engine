@@ -11,9 +11,10 @@ layout(std140, set = 0, binding = DY_VULKAN_BINDING_DRAW_CONSTANTS) uniform Vulk
     int vertexOffset;
     uint firstVertex;
     vec3 emissiveColor;
-    float shadowViewIndex;
+    float emissiveTextureIndex;
     vec4 baseColor;
     vec4 materialParams;
+    vec4 textureIndices;
 } pushConstants;
 
 layout(std140, set = 0, binding = DY_RENDERER_BINDING_SHADOW_MATRIX) uniform ShadowMatrix {
@@ -48,6 +49,6 @@ void main() {
 
     int resolvedVertexIndex = int(indexStorage.indices[pushConstants.firstIndex + uint(gl_VertexIndex)]) + pushConstants.vertexOffset;
     vec4 worldPosition = pushConstants.modelMatrix * vec4(LoadPosition(uint(resolvedVertexIndex)), 1.0);
-    int shadowView = clamp(int(pushConstants.shadowViewIndex + 0.5), 0, 5);
+    int shadowView = clamp(int(pushConstants.emissiveTextureIndex + 0.5), 0, 5);
     gl_Position = shadowMatrix.lightViewProjectionMatrices[shadowView] * worldPosition;
 }

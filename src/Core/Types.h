@@ -11,6 +11,8 @@ namespace dy
 	enum class TextureID           : uint32_t { Invalid = 0xFFFFFFFF };
 	enum class PointLightID        : uint32_t { Invalid = 0xFFFFFFFF };
 	enum class DirectionalLightID  : uint32_t { Invalid = 0xFFFFFFFF };
+	enum class ModelAssetID        : uint32_t { Invalid = 0xFFFFFFFF };
+	enum class ModelInstanceID     : uint32_t { Invalid = 0xFFFFFFFF };
 	enum class SpotLightID         : uint32_t { Invalid = 0xFFFFFFFF };
 	enum class RectAreaLightID     : uint32_t { Invalid = 0xFFFFFFFF };
 	enum class DiscAreaLightID     : uint32_t { Invalid = 0xFFFFFFFF };

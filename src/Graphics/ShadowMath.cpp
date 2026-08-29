@@ -83,11 +83,9 @@ namespace dy::Graphics
 			const Math::float3 forward = Math::NormalizeOr(camera.forward, Math::float3(0.0f, 1.0f, 0.0f));
 			const Math::float3 right = Math::NormalizeOr(Math::Cross(forward, camera.up), Math::float3(1.0f, 0.0f, 0.0f));
 			const Math::float3 up = Math::NormalizeOr(Math::Cross(right, forward), Math::float3(0.0f, 0.0f, 1.0f));
-			const float halfFov = std::clamp(camera.fovYRadians * 0.5f, 0.05f, 1.5f);
-			const float tangent = std::tan(halfFov);
+			const float tangent = std::tan(std::clamp(camera.fovYRadians * 0.5f, 0.05f, 1.5f));
 			const float safeAspect = std::max(camera.aspect, 0.0001f);
-
-			for (uint32_t planeIndex = 0u; planeIndex < 2u; ++planeIndex)
+			for(uint32_t planeIndex = 0u; planeIndex < 2u; ++planeIndex)
 			{
 				const float distance = planeIndex == 0u ? sliceNear : sliceFar;
 				const float halfHeight = tangent * distance;
@@ -105,14 +103,14 @@ namespace dy::Graphics
 			uint32_t tileResolution,
 			ShadowMapDesc& desc)
 		{
-			if (tileResolution == 0u) return;
+			if(tileResolution == 0u) return;
 			const Math::float3 lightForward = Math::NormalizeOr(lightDirection, Math::float3(0.0f, 0.0f, 1.0f));
 			const Math::float3 viewForward = lightForward * -1.0f;
 			const Math::float3 right = Math::NormalizeOr(Math::Cross(viewForward, SelectUpVector(lightForward)), Math::float3(1.0f, 0.0f, 0.0f));
 			const Math::float3 up = Math::NormalizeOr(Math::Cross(right, viewForward), Math::float3(0.0f, 1.0f, 0.0f));
 			const float texelX = desc.orthoWidth / static_cast<float>(tileResolution);
 			const float texelY = desc.orthoHeight / static_cast<float>(tileResolution);
-			if (texelX <= 0.0f || texelY <= 0.0f) return;
+			if(texelX <= 0.0f || texelY <= 0.0f) return;
 			const float centerX = Math::Dot(desc.sceneCenter, right);
 			const float centerY = Math::Dot(desc.sceneCenter, up);
 			const float snappedX = std::round(centerX / texelX) * texelX;
@@ -132,14 +130,14 @@ namespace dy::Graphics
 		farPlane = std::max(farPlane, nearPlane + 0.0001f);
 		cascadeCount = std::clamp(cascadeCount, 1u, kMaxShadowCascades);
 		lambda = std::clamp(lambda, 0.0f, 1.0f);
-		for (uint32_t index = 0u; index < cascadeCount; ++index)
+		for(uint32_t index = 0u; index < cascadeCount; ++index)
 		{
 			const float fraction = static_cast<float>(index + 1u) / static_cast<float>(cascadeCount);
 			const float logarithmic = nearPlane * std::pow(farPlane / nearPlane, fraction);
 			const float uniform = nearPlane + (farPlane - nearPlane) * fraction;
 			splits[index] = logarithmic * lambda + uniform * (1.0f - lambda);
 		}
-		for (uint32_t index = cascadeCount; index < kMaxShadowCascades; ++index) splits[index] = farPlane;
+		for(uint32_t index = cascadeCount; index < kMaxShadowCascades; ++index) splits[index] = farPlane;
 		splits[cascadeCount - 1u] = farPlane;
 		return splits;
 	}
@@ -154,11 +152,10 @@ namespace dy::Graphics
 	{
 		DirectionalCascadeData cascades;
 		cascades.count = std::clamp(cascadeCount, 1u, kMaxShadowCascades);
-		cascades.splits = ComputePracticalCascadeSplits(
-			camera.nearPlane, camera.farPlane, cascades.count, splitLambda);
+		cascades.splits = ComputePracticalCascadeSplits(camera.nearPlane, camera.farPlane, cascades.count, splitLambda);
 		const uint32_t tileResolution = std::max(baseDesc.resolution / 2u, 1u);
 		float sliceNear = std::max(camera.nearPlane, 0.0001f);
-		for (uint32_t cascadeIndex = 0u; cascadeIndex < cascades.count; ++cascadeIndex)
+		for(uint32_t cascadeIndex = 0u; cascadeIndex < cascades.count; ++cascadeIndex)
 		{
 			const float sliceFar = cascades.splits[cascadeIndex];
 			Math::Bounds3 bounds;
@@ -169,7 +166,7 @@ namespace dy::Graphics
 			cascades.viewProjections[cascadeIndex] = ComputeDirectionalLightViewProj(lightDirection, cascadeDesc);
 			sliceNear = sliceFar;
 		}
-		for (uint32_t index = cascades.count; index < kMaxShadowCascades; ++index)
+		for(uint32_t index = cascades.count; index < kMaxShadowCascades; ++index)
 		{
 			cascades.viewProjections[index] = Math::float4x4::Identity();
 		}
@@ -196,7 +193,7 @@ namespace dy::Graphics
 		Math::float4x4 projection = Math::PerspectiveRH_ZO(1.57079633f, 1.0f, nearPlane, farPlane);
 		projection.m[5] = -projection.m[5];
 		std::array<Math::float4x4, kMaxShadowViews> views = {};
-		for (uint32_t face = 0u; face < kMaxShadowViews; ++face)
+		for(uint32_t face = 0u; face < kMaxShadowViews; ++face)
 		{
 			views[face] = projection * Math::LookAtRH(lightPosition, lightPosition + directions[face], upVectors[face]);
 		}

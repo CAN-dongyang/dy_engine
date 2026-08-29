@@ -17,9 +17,10 @@ layout(std140, set = 0, binding = DY_VULKAN_BINDING_DRAW_CONSTANTS) uniform Vulk
     int vertexOffset;
     uint firstVertex;
     vec3 emissiveColor;
-    float baseColorTextureIndex;
+    float emissiveTextureIndex;
     vec4 baseColor;
     vec4 materialParams;
+    vec4 textureIndices;
 } pushConstants;
 
 layout(std430, set = 0, binding = DY_RENDERER_BINDING_VERTEX_STORAGE) readonly buffer VertexStorage {
@@ -83,13 +84,7 @@ void main() {
     gl_Position = pushConstants.viewProjectionMatrix * worldPosition;
     fragUv = vertex.uv;
     fragWorldPosition = worldPosition.xyz;
-    mat3 model3x3 = mat3(resolvedModelMatrix);
-    float modelDeterminant = determinant(model3x3);
-    mat3 normalMatrix = abs(modelDeterminant) > 0.000001
-        ? transpose(inverse(mat3(resolvedModelMatrix)))
-        : mat3(1.0);
-    fragNormal = normalize(normalMatrix * vertex.normal);
-    float tangentHandedness = modelDeterminant < 0.0 ? -vertex.tangent.w : vertex.tangent.w;
-    fragTangent = vec4(normalize(model3x3 * vertex.tangent.xyz), tangentHandedness);
+    fragNormal = normalize(mat3(resolvedModelMatrix) * vertex.normal);
+    fragTangent = vec4(normalize(mat3(resolvedModelMatrix) * vertex.tangent.xyz), vertex.tangent.w);
     fragLightSpacePosition = shadowMatrix.lightViewProjectionMatrices[0] * worldPosition;
 }

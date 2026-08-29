@@ -6,7 +6,6 @@
 
 #include "Core/Types.h"
 #include "Graphics/GpuScene.h"
-#include "Graphics/PerFrameBufferSet.h"
 #include "Graphics/RenderPass.h"
 #include "Graphics/RenderPath.h"
 #include "Graphics/RendererConfig.h"
@@ -75,18 +74,21 @@ namespace dy::Graphics
 		std::vector<char> m_vertexShaderSource;
 		std::vector<char> m_pixelShaderSource;
 		std::vector<char> m_shadowVertexShaderSource;
+		std::vector<char> m_computeSkinningShaderSource;
 		std::vector<char> m_toneMapVertexShaderSource;
 		std::vector<char> m_toneMapPixelShaderSource;
 		RHI::IPipelineState* m_pipeline = nullptr;
 		RHI::IPipelineState* m_shadowPipeline = nullptr;
+		RHI::IPipelineState* m_skinningPipeline = nullptr;
 		RHI::IPipelineState* m_toneMapPipeline = nullptr;
 		RHI::ITexture* m_depthStencilTarget = nullptr;
 		RHI::ITexture* m_hdrColorTarget = nullptr;
 		RHI::ITexture* m_shadowDepthTarget = nullptr;
-		PerFrameBufferSet m_lightingBuffers;
-		PerFrameBufferSet m_shadowMatrixBuffers;
+		RHI::IBuffer* m_lightingBuffer = nullptr;
+		RHI::IBuffer* m_shadowMatrixBuffer = nullptr;
 		uint32_t m_shadowDescriptorIndex = 0xFFFFFFFFu;
 		bool m_useExplicitShadowPass = false;
+		SkinningExecutionMode m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
 		GpuScene m_gpuScene;
 		std::vector<SceneMaterialState> m_materialStates;
 		std::unique_ptr<IRenderPath> m_path;
