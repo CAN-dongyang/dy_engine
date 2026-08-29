@@ -44,24 +44,16 @@ public:
 		dy::RHI::BufferAccess destinationAccess,
 		uint32_t offset,
 		uint32_t size) override;
-	void Close() override { m_isClosed = true; }
+	void Close() override {}
 
 	void Begin();
-	void End();
 
 private:
 	static constexpr uint32_t kMaxConstantBufferBindings = kMaxDescriptorBindings;
 	static constexpr uint32_t kMaxRenderTargets = kDefaultMaxRenderTargets;
 	static constexpr uint32_t kMaxTextureBindings = kMaxDescriptorBindings;
 
-	struct ConstantBufferBinding
-	{
-		dy::RHI::IBuffer* buffer = nullptr;
-		uint32_t offset = 0;
-		uint32_t size = 0;
-	};
-
-	struct StorageBufferBinding
+	struct BufferBinding
 	{
 		dy::RHI::IBuffer* buffer = nullptr;
 		uint32_t offset = 0;
@@ -82,10 +74,9 @@ private:
 		bool hasViewport = false;
 		bool hasScissor = false;
 		dy::RHI::IPipelineState* pipelineState = nullptr;
-		uint32_t vertexStride = 0;
 		dy::RHI::GeometryBinding geometry = {};
-		std::array<ConstantBufferBinding, kMaxConstantBufferBindings> constantBuffers = {};
-		std::array<StorageBufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
+		std::array<BufferBinding, kMaxConstantBufferBindings> constantBuffers = {};
+		std::array<BufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
 		std::array<dy::RHI::ITexture*, kMaxTextureBindings> textures = {};
 		uint32_t renderTargetCount = 0u;
 		std::array<dy::RHI::ITexture*, kMaxRenderTargets> renderTargets = {};
@@ -104,7 +95,7 @@ private:
 		uint32_t threadGroupCountY = 0u;
 		uint32_t threadGroupCountZ = 0u;
 		uint32_t inlineConstantSize = 0u;
-		std::array<StorageBufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
+		std::array<BufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
 		std::array<uint8_t, kMaxPushConstantBytes> inlineConstants = {};
 	};
 
@@ -128,8 +119,8 @@ private:
 	std::array<uint8_t, kMaxPushConstantBytes> m_pendingPushConstants = {};
 	uint32_t m_pendingPushConstantSize = 0;
 	dy::RHI::GeometryBinding m_pendingGeometry = {};
-	std::array<ConstantBufferBinding, kMaxConstantBufferBindings> m_pendingConstantBuffers = {};
-	std::array<StorageBufferBinding, kMaxConstantBufferBindings> m_pendingStorageBuffers = {};
+	std::array<BufferBinding, kMaxConstantBufferBindings> m_pendingConstantBuffers = {};
+	std::array<BufferBinding, kMaxConstantBufferBindings> m_pendingStorageBuffers = {};
 	std::array<dy::RHI::ITexture*, kMaxTextureBindings> m_pendingTextures = {};
 	bool m_hasPendingViewport = false;
 	bool m_hasPendingScissor = false;
@@ -138,7 +129,6 @@ private:
 	std::vector<DrawCall> m_drawCalls;
 	std::vector<ComputeDispatch> m_computeDispatches;
 	std::vector<BufferBarrier> m_bufferBarriers;
-	bool m_isClosed = false;
 };
 
 }

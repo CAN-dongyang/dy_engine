@@ -24,7 +24,6 @@ void VulkanCommandList::Begin()
 	m_drawCalls.clear();
 	m_computeDispatches.clear();
 	m_bufferBarriers.clear();
-	m_isClosed = false;
 }
 
 void VulkanCommandList::BindGraphicsPipeline(dy::RHI::IPipelineState* pipelineState)
@@ -135,7 +134,6 @@ void VulkanCommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCou
 	drawCall.startInstance = startInstance;
 	drawCall.pushConstantSize = m_pendingPushConstantSize;
 	drawCall.pipelineState = m_boundPipeline;
-	drawCall.vertexStride = m_pendingGeometry.vertexStride;
 	drawCall.geometry = m_pendingGeometry;
 	drawCall.constantBuffers = m_pendingConstantBuffers;
 	drawCall.storageBuffers = m_pendingStorageBuffers;
@@ -166,7 +164,6 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 	drawCall.startInstance = firstInstance;
 	drawCall.pushConstantSize = m_pendingPushConstantSize;
 	drawCall.pipelineState = m_boundPipeline;
-	drawCall.vertexStride = m_pendingGeometry.vertexStride;
 	drawCall.geometry = m_pendingGeometry;
 	drawCall.constantBuffers = m_pendingConstantBuffers;
 	drawCall.storageBuffers = m_pendingStorageBuffers;
@@ -222,10 +219,6 @@ void VulkanCommandList::BufferMemoryBarrier(
 		destinationAccess,
 		offset,
 		size });
-}
-
-void VulkanCommandList::End()
-{
 }
 
 }
