@@ -16,12 +16,9 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
-#include <fstream>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
-#include <string>
 #include <utility>
 #include <vector>
 #if defined(_WIN32)
@@ -46,33 +43,10 @@ namespace {
 	};
 	constexpr uint32_t kRequiredVulkanApiVersion = VK_API_VERSION_1_4;
 
-	struct VulkanFeatureSupport
-	{
-		bool dynamicRendering = false;
-		bool synchronization2 = false;
-		bool pushDescriptor = false;
-		bool maintenance5 = false;
-		bool maintenance6 = false;
-		bool hostImageCopy = false;
-		bool optimalRgba8HostImageCopy = false;
-		bool shaderSampledImageArrayDynamicIndexing = false;
-		uint32_t maxPushDescriptors = 0;
-	};
-
 	constexpr bool SupportsRequiredVulkanApiVersion(uint32_t apiVersion)
 	{
 		return VK_API_VERSION_VARIANT(apiVersion) == 0u
 			&& apiVersion >= kRequiredVulkanApiVersion;
-	}
-
-	constexpr const char* GetMissingRequiredVulkanFeature(const VulkanFeatureSupport& features)
-	{
-		if (!features.dynamicRendering) return "dynamicRendering";
-		if (!features.synchronization2) return "synchronization2";
-		if (!features.pushDescriptor) return "pushDescriptor";
-		if (!features.maintenance5) return "maintenance5";
-		if (!features.maintenance6) return "maintenance6";
-		return nullptr;
 	}
 
 	size_t ResourceProfileIndex(dy::RHI::GraphicsResourceProfile profile)
@@ -416,9 +390,7 @@ namespace {
 			VkDescriptorSetLayout descriptorSetLayout,
 			VkDescriptorSetLayout bindlessDescriptorSetLayout,
 			const dy::RHI::GraphicsPipelineDesc& desc)
-			: m_device(context.device),
-			m_shadowPassEnabled(desc.enableShadowPass),
-			m_bindlessTexturesEnabled(desc.enableBindlessTextures)
+			: m_device(context.device)
 		{
 			CopyPipelineDesc(desc);
 			m_pipelineCache.reserve(4);
@@ -460,8 +432,8 @@ namespace {
 			}
 		}
 
-		bool IsShadowPassEnabled() const { return m_shadowPassEnabled; }
-		bool UsesBindlessTextures() const { return m_bindlessTexturesEnabled; }
+		bool IsShadowPassEnabled() const { return m_desc.enableShadowPass; }
+		bool UsesBindlessTextures() const { return m_desc.enableBindlessTextures; }
 		dy::RHI::GraphicsResourceProfile GetResourceProfile() const { return m_desc.resourceProfile; }
 
 	private:
@@ -485,24 +457,20 @@ namespace {
 			m_desc = desc;
 			CopyShaderBytes(desc.vertexShader, desc.vertexShaderSize, m_vertexShader);
 			CopyShaderBytes(desc.pixelShader, desc.pixelShaderSize, m_pixelShader);
-			CopyShaderBytes(desc.shadowVertexShader, desc.shadowVertexShaderSize, m_shadowVertexShader);
 
 			m_desc.vertexShader = m_vertexShader.empty() ? nullptr : m_vertexShader.data();
 			m_desc.vertexShaderSize = m_vertexShader.size();
 			m_desc.pixelShader = m_pixelShader.empty() ? nullptr : m_pixelShader.data();
 			m_desc.pixelShaderSize = m_pixelShader.size();
-			m_desc.shadowVertexShader = m_shadowVertexShader.empty() ? nullptr : m_shadowVertexShader.data();
-			m_desc.shadowVertexShaderSize = m_shadowVertexShader.size();
+			m_desc.shadowVertexShader = nullptr;
+			m_desc.shadowVertexShaderSize = 0u;
 		}
 
 		VkDevice m_device = VK_NULL_HANDLE;
 		dy::RHI::GraphicsPipelineDesc m_desc = {};
 		std::vector<uint8_t> m_vertexShader;
 		std::vector<uint8_t> m_pixelShader;
-		std::vector<uint8_t> m_shadowVertexShader;
 		mutable std::vector<PipelineCacheEntry> m_pipelineCache;
-		bool m_shadowPassEnabled = false;
-		bool m_bindlessTexturesEnabled = false;
 	};
 
 	class VulkanComputePipelineState final : public dy::RHI::IPipelineState
@@ -565,11 +533,14 @@ namespace {
 				if(vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS)
 					throw std::runtime_error("failed to create compute pipeline layout");
 
-				VkShaderModule shaderModule = CreateShaderModule(desc.computeShader, desc.computeShaderSize);
+				VkShaderModuleCreateInfo shaderModuleInfo{};
+				shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+				shaderModuleInfo.codeSize = desc.computeShaderSize;
+				shaderModuleInfo.pCode = static_cast<const uint32_t*>(desc.computeShader);
 				VkPipelineShaderStageCreateInfo stage{};
 				stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+				stage.pNext = &shaderModuleInfo;
 				stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-				stage.module = shaderModule;
 				stage.pName = "main";
 				VkComputePipelineCreateInfo pipelineInfo{};
 				pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -582,7 +553,6 @@ namespace {
 					&pipelineInfo,
 					nullptr,
 					&m_pipeline);
-				vkDestroyShaderModule(m_device, shaderModule, nullptr);
 				if(pipelineResult != VK_SUCCESS)
 					throw std::runtime_error("failed to create compute pipeline");
 			}
@@ -626,18 +596,6 @@ namespace {
 		uint32_t GetInlineConstantSize() const { return m_inlineConstantSize; }
 
 	private:
-		VkShaderModule CreateShaderModule(const void* shaderCode, size_t shaderSize)
-		{
-			VkShaderModuleCreateInfo createInfo{};
-			createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-			createInfo.codeSize = shaderSize;
-			createInfo.pCode = reinterpret_cast<const uint32_t*>(shaderCode);
-			VkShaderModule shaderModule = VK_NULL_HANDLE;
-			if(vkCreateShaderModule(m_device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
-				throw std::runtime_error("failed to create compute shader module");
-			return shaderModule;
-		}
-
 		void Cleanup()
 		{
 			if(m_pipeline != VK_NULL_HANDLE) vkDestroyPipeline(m_device, m_pipeline, nullptr);
@@ -660,20 +618,6 @@ namespace {
 		uint32_t m_descriptorCapacityPerFrame = 0u;
 		std::vector<std::vector<VkDescriptorSet>> m_frameDescriptorSets;
 	};
-
-	VkShaderModule CreateShaderModule(VkDevice device, const void* shaderCode, size_t shaderSize)
-	{
-		VkShaderModuleCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-		createInfo.codeSize = shaderSize;
-		createInfo.pCode = reinterpret_cast<const uint32_t*>(shaderCode);
-
-		VkShaderModule shaderModule = VK_NULL_HANDLE;
-		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create shader module");
-		}
-		return shaderModule;
-	}
 
 	VkBufferUsageFlags ToVkBufferUsage(dy::RHI::BufferUsage usage)
 	{
@@ -896,7 +840,7 @@ struct VulkanDevice::Impl
 	void DestroyTexture(dy::RHI::ITexture* texture);
 	void DestroyPipelineState(dy::RHI::IPipelineState* pipeline);
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer();
-	[[nodiscard]] bool SupportsSkinningStorageBindings() const { return m_capabilities.supportsSkinningStorageBindings; }
+	[[nodiscard]] bool SupportsSkinningStorageBindings() const { return m_context.device != VK_NULL_HANDLE; }
 	[[nodiscard]] bool SupportsComputeSkinning() const { return m_capabilities.supportsComputeSkinning; }
 	[[nodiscard]] uint32_t GetValidationErrorCount() const { return m_validationErrorCount.load(); }
 	[[nodiscard]] uint32_t GetValidationVuidCount() const { return m_validationVuidCount.load(); }
@@ -909,14 +853,11 @@ private:
 		VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
 	};
 
-	const dy::RHI::DeviceDesc& GetDesc() const { return m_owner.GetDesc(); }
-
 	bool CreateInstance();
-	bool CreateDebugMessenger();
 	void DestroyDebugMessenger();
 	static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
 		VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-		VkDebugUtilsMessageTypeFlagsEXT type,
+		VkDebugUtilsMessageTypeFlagsEXT,
 		const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
 		void* userData);
 	bool CreateSurface();
@@ -985,7 +926,7 @@ private:
 	VulkanContext m_context;
 	VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
 	VulkanSwapchain m_swapchain;
-	VulkanFeatureSupport m_featureSupport = {};
+	bool m_optimalRgba8HostImageCopy = false;
 
 	void* m_windowHandle = nullptr;
 
@@ -1044,22 +985,13 @@ private:
 	uint32_t m_maxDrawsPerFrame = dy::RHI::DeviceDesc{}.maxDrawsPerFrame;
 	uint32_t m_maxBindlessTextures = dy::RHI::DeviceDesc{}.maxBindlessTextures;
 	uint32_t m_defaultShadowMapResolution = dy::RHI::DeviceDesc{}.defaultShadowMapResolution;
-	uint32_t m_descriptorSetCount = 0u;
 	uint32_t m_descriptorCapacityPerFrame = 0u;
 	uint64_t m_frameAcquireTimeoutNanoseconds = dy::RHI::DeviceDesc{}.frameAcquireTimeoutNanoseconds;
 	VulkanCapabilities m_capabilities = {};
 	bool m_validationEnabled = false;
 	bool m_debugUtilsEnabled = false;
-	struct ValidationMessage
-	{
-		VkDebugUtilsMessageSeverityFlagBitsEXT severity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
-		VkDebugUtilsMessageTypeFlagsEXT type = 0u;
-		std::string message;
-	};
 	std::atomic<uint32_t> m_validationErrorCount = 0u;
 	std::atomic<uint32_t> m_validationVuidCount = 0u;
-	std::mutex m_validationMessageMutex;
-	std::vector<ValidationMessage> m_validationMessages;
 	dy::RHI::ShaderLayoutDesc m_shaderLayout = {};
 	uint32_t m_currentFrameIndex = 0;
 	uint32_t m_currentImageIndex = 0;
@@ -1220,17 +1152,12 @@ VulkanDevice::Impl::~Impl() {
 int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::DeviceDesc& desc) {
 	m_windowHandle = const_cast<void*>(windowHandle);
 	if (!m_windowHandle) return -1;
-	if (!ValidateVulkanDeviceConfig(desc, m_descriptorSetCount)) {
-		SDL_Log("Invalid Vulkan device configuration: frames and draws must be non-zero and their product must fit uint32.");
-		return -1;
-	}
 	if(!TryComputeVulkanDescriptorPageCapacity(
 		desc,
 		kMaxDescriptorPagesPerFrame,
-		m_descriptorCapacityPerFrame,
-		m_descriptorSetCount))
+		m_descriptorCapacityPerFrame))
 	{
-		SDL_Log("Invalid Vulkan descriptor page capacity: expanded frame/page count overflows uint32.");
+		SDL_Log("Invalid Vulkan descriptor configuration: frames, draws, and pages must be non-zero and expanded capacity must fit uint32.");
 		return -1;
 	}
 	m_maxFramesInFlight = desc.maxFramesInFlight;
@@ -1251,7 +1178,7 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 		const VkResult swapchainResult = m_swapchain.Initialize(
 			m_context,
 			m_windowHandle,
-			dy::RHI::IsSrgbFormat(GetDesc().swapchainFormat));
+			dy::RHI::IsSrgbFormat(m_owner.GetDesc().swapchainFormat));
 		if(swapchainResult != VK_SUCCESS)
 		{
 			if(swapchainResult == VK_ERROR_DEVICE_LOST) m_deviceLost = true;
@@ -1281,7 +1208,7 @@ int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::Devi
 
 dy::RHI::ITexture* VulkanDevice::Impl::CreateTexture(const dy::RHI::TextureDesc& desc) {
 	std::unique_ptr<VulkanTexture> texture(new VulkanTexture(desc));
-	if (!texture->Initialize(m_context, desc, VK_FORMAT_UNDEFINED, 0, m_featureSupport.optimalRgba8HostImageCopy)) {
+	if (!texture->Initialize(m_context, desc, VK_FORMAT_UNDEFINED, 0, m_optimalRgba8HostImageCopy)) {
 		return nullptr;
 	}
 	if (HasTextureUsage(desc.usage, dy::RHI::TextureUsage::ShaderResource) && !texture->CreateDefaultSampler()) {
@@ -1365,9 +1292,7 @@ bool VulkanDevice::Impl::ReadbackTextureRGBA32Float(
 		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		toTransfer.image = vulkanTexture->GetImage();
 		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		toTransfer.subresourceRange.baseMipLevel = 0u;
 		toTransfer.subresourceRange.levelCount = 1u;
-		toTransfer.subresourceRange.baseArrayLayer = 0u;
 		toTransfer.subresourceRange.layerCount = 1u;
 		VkDependencyInfo toTransferDependency{};
 		toTransferDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1378,8 +1303,6 @@ bool VulkanDevice::Impl::ReadbackTextureRGBA32Float(
 		VkBufferImageCopy2 copyRegion{};
 		copyRegion.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
 		copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copyRegion.imageSubresource.mipLevel = 0u;
-		copyRegion.imageSubresource.baseArrayLayer = 0u;
 		copyRegion.imageSubresource.layerCount = 1u;
 		copyRegion.imageExtent = {
 			vulkanTexture->GetWidth(),
@@ -1443,11 +1366,6 @@ bool VulkanDevice::Impl::ReadbackTextureRGBA32Float(
 
 dy::RHI::IPipelineState* VulkanDevice::Impl::CreateGraphicsPipeline(const dy::RHI::GraphicsPipelineDesc& desc) {
 	try {
-		if(!SupportsVulkanResourceProfile(m_capabilities, desc.resourceProfile))
-		{
-			SDL_Log("Vulkan graphics resource profile %u is unsupported by the selected device.", static_cast<uint32_t>(desc.resourceProfile));
-			return nullptr;
-		}
 		if(!EnsureProfileResources(desc.resourceProfile)) return nullptr;
 		const ProfileResources* profileResources = GetProfileResources(desc.resourceProfile);
 		if(profileResources == nullptr || profileResources->descriptorSetLayout == VK_NULL_HANDLE) return nullptr;
@@ -1767,8 +1685,7 @@ void VulkanDevice::Impl::RecoverAbortedAcquiredFrame(bool recreateFence)
 }
 
 void VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count) {
-	const bool commandListValid = count > 0u && cmdLists != nullptr && cmdLists[0] != nullptr;
-	if(!m_frameReady || !commandListValid)
+	if(!m_frameReady || count == 0u || cmdLists == nullptr || cmdLists[0] == nullptr)
 	{
 		m_frameReady = false;
 		return;
@@ -1786,8 +1703,7 @@ void VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count
 		m_frameReady = false;
 		return;
 	}
-	const bool descriptorsUpdated = UpdateComputeDescriptorSets(*vulkanCmd);
-	if (!descriptorsUpdated) {
+	if (!UpdateComputeDescriptorSets(*vulkanCmd)) {
 		SDL_Log("Failed to update Vulkan compute descriptor sets.");
 		m_frameReady = false;
 		return;
@@ -1797,13 +1713,7 @@ void VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count
 		m_frameReady = false;
 		return;
 	}
-	const bool commandRecorded = RecordCommandBuffer(*vulkanCmd);
-	const VulkanSubmissionDecision decision = EvaluateVulkanSubmissionPreparation(
-		m_frameReady,
-		commandListValid,
-		descriptorsUpdated,
-		commandRecorded);
-	if(!decision.submit)
+	if(!RecordCommandBuffer(*vulkanCmd))
 	{
 		SDL_Log("Failed to record Vulkan command buffer; acquired frame will be recovered.");
 		const VkResult discardResult = vkResetCommandBuffer(
@@ -1864,8 +1774,7 @@ void VulkanDevice::Impl::Submit(dy::RHI::ICommandList** cmdLists, uint32_t count
 		m_inFlightFences[m_currentFrameIndex]);
 	if (submitResult != VK_SUCCESS) {
 		SDL_Log("Failed to submit Vulkan draw command buffer: %s (%d)", VkResultToString(submitResult), static_cast<int>(submitResult));
-		const VulkanQueueFailureAction failureAction = EvaluateVulkanQueueFailure(submitResult);
-		if(failureAction == VulkanQueueFailureAction::MarkDeviceLost)
+		if(submitResult == VK_ERROR_DEVICE_LOST)
 		{
 			m_deviceLost = true;
 			m_frameReady = false;
@@ -2001,7 +1910,11 @@ bool VulkanDevice::Impl::CreateInstance() {
 		return false;
 	}
 
-	return !m_debugUtilsEnabled || CreateDebugMessenger();
+	if(!m_debugUtilsEnabled) return true;
+	const auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+		vkGetInstanceProcAddr(m_context.instance, "vkCreateDebugUtilsMessengerEXT"));
+	return createMessenger != nullptr
+		&& createMessenger(m_context.instance, &debugCreateInfo, nullptr, &m_debugMessenger) == VK_SUCCESS;
 }
 
 bool VulkanDevice::Impl::CreateSurface() {
@@ -2017,7 +1930,7 @@ bool VulkanDevice::Impl::CreateSurface() {
 }
 
 bool VulkanDevice::Impl::PickPhysicalDevice() {
-	m_featureSupport = {};
+	m_optimalRgba8HostImageCopy = false;
 	uint32_t deviceCount = 0;
 	if(vkEnumeratePhysicalDevices(m_context.instance, &deviceCount, nullptr) != VK_SUCCESS || deviceCount == 0u) return false;
 	std::vector<VkPhysicalDevice> devices(deviceCount);
@@ -2027,7 +1940,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 	VkPhysicalDevice bestDevice = VK_NULL_HANDLE;
 	VulkanContext::QueueFamilyIndices bestIndices;
 	VulkanCapabilities bestCapabilities = {};
-	VulkanFeatureSupport bestFeatureSupport = {};
+	bool bestOptimalRgba8HostImageCopy = false;
 	for (VkPhysicalDevice device : devices) {
 		uint32_t extensionCount = 0u;
 		if(vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr) != VK_SUCCESS) continue;
@@ -2048,24 +1961,15 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 		vkGetPhysicalDeviceProperties2(device, &properties);
 		if (!SupportsRequiredVulkanApiVersion(properties.properties.apiVersion)) continue;
 
-		VkPhysicalDeviceFeatures2 supportedFeatures{};
-		supportedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		VkPhysicalDeviceVulkan13Features vulkan13Features{};
-		vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 		VkPhysicalDeviceVulkan14Features vulkan14Features{};
 		vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-		supportedFeatures.pNext = &vulkan13Features;
-		vulkan13Features.pNext = &vulkan14Features;
+		VkPhysicalDeviceFeatures2 supportedFeatures{};
+		supportedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		supportedFeatures.pNext = &vulkan14Features;
 		vkGetPhysicalDeviceFeatures2(device, &supportedFeatures);
 
-		VulkanFeatureSupport featureSupport{};
-		featureSupport.dynamicRendering = vulkan13Features.dynamicRendering == VK_TRUE;
-		featureSupport.synchronization2 = vulkan13Features.synchronization2 == VK_TRUE;
-		featureSupport.pushDescriptor = vulkan14Features.pushDescriptor == VK_TRUE;
-		featureSupport.maintenance5 = vulkan14Features.maintenance5 == VK_TRUE;
-		featureSupport.maintenance6 = vulkan14Features.maintenance6 == VK_TRUE;
-		featureSupport.hostImageCopy = vulkan14Features.hostImageCopy == VK_TRUE;
-		if (featureSupport.hostImageCopy) {
+		bool optimalRgba8HostImageCopy = false;
+		if (vulkan14Features.hostImageCopy == VK_TRUE) {
 			std::vector<VkImageLayout> copySrcLayouts(vulkan14Properties.copySrcLayoutCount);
 			std::vector<VkImageLayout> copyDstLayouts(vulkan14Properties.copyDstLayoutCount);
 			vulkan14Properties.pCopySrcLayouts = copySrcLayouts.data();
@@ -2096,25 +2000,11 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 			VkImageFormatProperties2 imageProperties{};
 			imageProperties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
 			imageProperties.pNext = &performance;
-			featureSupport.optimalRgba8HostImageCopy = formatSupportsHostTransfer &&
+			optimalRgba8HostImageCopy = formatSupportsHostTransfer &&
 				shaderReadLayoutSupported &&
 				vkGetPhysicalDeviceImageFormatProperties2(device, &imageFormatInfo, &imageProperties) == VK_SUCCESS &&
 				performance.optimalDeviceAccess == VK_TRUE &&
 				performance.identicalMemoryLayout == VK_TRUE;
-		}
-		featureSupport.shaderSampledImageArrayDynamicIndexing =
-			supportedFeatures.features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
-		featureSupport.maxPushDescriptors = vulkan14Properties.maxPushDescriptors;
-		if (const char* missingFeature = GetMissingRequiredVulkanFeature(featureSupport); missingFeature != nullptr) {
-			SDL_Log("Vulkan 1.4 device is missing required %s feature.", missingFeature);
-			continue;
-		}
-		if (featureSupport.maxPushDescriptors < m_shaderLayout.descriptorBindingCount) {
-			SDL_Log(
-				"Vulkan device supports %u push descriptors, but the backend requires %u.",
-				featureSupport.maxPushDescriptors,
-				m_shaderLayout.descriptorBindingCount);
-			continue;
 		}
 
 		uint32_t count = 0; vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
@@ -2141,7 +2031,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 
 		if(!indices.IsComplete()) continue;
 		auto swapchainSupport = VulkanSwapchain::QuerySwapchainSupport(device, m_context.surface);
-		if(!swapchainSupport.querySucceeded || swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) continue;
+		if(swapchainSupport.result != VK_SUCCESS || swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) continue;
 
 		VulkanDeviceLimits limits;
 		limits.maxPushConstantsSize = properties.properties.limits.maxPushConstantsSize;
@@ -2151,11 +2041,10 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 		limits.maxUniformBufferRange = properties.properties.limits.maxUniformBufferRange;
 		limits.minUniformBufferOffsetAlignment = std::max<VkDeviceSize>(properties.properties.limits.minUniformBufferOffsetAlignment, 1u);
 		limits.minStorageBufferOffsetAlignment = std::max<VkDeviceSize>(properties.properties.limits.minStorageBufferOffsetAlignment, 1u);
-		const VulkanCapabilities capabilities = BuildVulkanCapabilities(
-			limits,
-			featureSupport.shaderSampledImageArrayDynamicIndexing,
-			m_validationEnabled,
-			families[indices.graphicsFamily].queueFlags);
+		VulkanCapabilities capabilities{};
+		capabilities.limits = limits;
+		capabilities.supportsComputeSkinning =
+			(families[indices.graphicsFamily].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0u;
 
 		int32_t score = static_cast<int32_t>(properties.properties.limits.maxImageDimension2D);
 		switch(properties.properties.deviceType)
@@ -2171,7 +2060,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 			bestDevice = device;
 			bestIndices = indices;
 			bestCapabilities = capabilities;
-			bestFeatureSupport = featureSupport;
+			bestOptimalRgba8HostImageCopy = optimalRgba8HostImageCopy;
 		}
 	}
 	if(bestDevice == VK_NULL_HANDLE)
@@ -2182,32 +2071,11 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 	m_context.physicalDevice = bestDevice;
 	m_context.queueIndices = bestIndices;
 	m_capabilities = bestCapabilities;
-	m_featureSupport = bestFeatureSupport;
+	m_optimalRgba8HostImageCopy = bestOptimalRgba8HostImageCopy;
 	SDL_Log(
 		"Vulkan RGBA8 Host Image Copy: %s.",
-		m_featureSupport.optimalRgba8HostImageCopy ? "enabled" : "staging fallback");
+		m_optimalRgba8HostImageCopy ? "enabled" : "staging fallback");
 	return true;
-}
-
-bool VulkanDevice::Impl::CreateDebugMessenger()
-{
-	const auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
-		vkGetInstanceProcAddr(m_context.instance, "vkCreateDebugUtilsMessengerEXT"));
-	if(createMessenger == nullptr) return false;
-	VkDebugUtilsMessengerCreateInfoEXT info{};
-	info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-	info.messageSeverity =
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-	info.messageType =
-		VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-	info.pfnUserCallback = &VulkanDevice::Impl::DebugUtilsCallback;
-	info.pUserData = this;
-	return createMessenger(m_context.instance, &info, nullptr, &m_debugMessenger) == VK_SUCCESS;
 }
 
 void VulkanDevice::Impl::DestroyDebugMessenger()
@@ -2221,7 +2089,7 @@ void VulkanDevice::Impl::DestroyDebugMessenger()
 
 VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDevice::Impl::DebugUtilsCallback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-	VkDebugUtilsMessageTypeFlagsEXT type,
+	VkDebugUtilsMessageTypeFlagsEXT,
 	const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
 	void* userData)
 {
@@ -2237,8 +2105,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDevice::Impl::DebugUtilsCallback(
 		if((messageId != nullptr && std::strstr(messageId, "VUID-") != nullptr)
 			|| std::strstr(message, "VUID-") != nullptr)
 			impl->m_validationVuidCount.fetch_add(1u);
-		std::lock_guard<std::mutex> lock(impl->m_validationMessageMutex);
-		impl->m_validationMessages.push_back(ValidationMessage{ severity, type, message });
 	}
 	if((severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) != 0u)
 		SDL_Log("Vulkan validation: %s", message);
@@ -2263,8 +2129,7 @@ bool VulkanDevice::Impl::CreateLogicalDevice() {
 	const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 	VkPhysicalDeviceFeatures2 enabledFeatures{};
 	enabledFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-	enabledFeatures.features.shaderSampledImageArrayDynamicIndexing =
-		m_featureSupport.shaderSampledImageArrayDynamicIndexing ? VK_TRUE : VK_FALSE;
+	enabledFeatures.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 	VkPhysicalDeviceVulkan13Features vulkan13Features{};
 	vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	vulkan13Features.dynamicRendering = VK_TRUE;
@@ -2273,8 +2138,7 @@ bool VulkanDevice::Impl::CreateLogicalDevice() {
 	vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
 	vulkan14Features.pushDescriptor = VK_TRUE;
 	vulkan14Features.maintenance5 = VK_TRUE;
-	vulkan14Features.maintenance6 = VK_TRUE;
-	vulkan14Features.hostImageCopy = m_featureSupport.optimalRgba8HostImageCopy ? VK_TRUE : VK_FALSE;
+	vulkan14Features.hostImageCopy = m_optimalRgba8HostImageCopy ? VK_TRUE : VK_FALSE;
 	enabledFeatures.pNext = &vulkan13Features;
 	vulkan13Features.pNext = &vulkan14Features;
 	VkDeviceCreateInfo createInfo{};
@@ -2655,14 +2519,15 @@ bool VulkanDevice::Impl::RecordMainPass(
 		if (usesBindlessTextures && bindlessDescriptorSet == VK_NULL_HANDLE) return false;
 		if (usesBindlessTextures) {
 			if (bindlessDescriptorSet != currentBindlessDescriptorSet) {
-				VkBindDescriptorSetsInfo bindInfo{};
-				bindInfo.sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO;
-				bindInfo.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
-				bindInfo.layout = pipeline->GetLayout();
-				bindInfo.firstSet = 1;
-				bindInfo.descriptorSetCount = 1;
-				bindInfo.pDescriptorSets = &bindlessDescriptorSet;
-				vkCmdBindDescriptorSets2(commandBuffer, &bindInfo);
+				vkCmdBindDescriptorSets(
+					commandBuffer,
+					VK_PIPELINE_BIND_POINT_GRAPHICS,
+					pipeline->GetLayout(),
+					1u,
+					1u,
+					&bindlessDescriptorSet,
+					0u,
+					nullptr);
 				currentBindlessDescriptorSet = bindlessDescriptorSet;
 			}
 		}
@@ -3165,7 +3030,6 @@ bool VulkanDevice::Impl::EnsureProfileResources(dy::RHI::GraphicsResourceProfile
 	ProfileResources* resources = GetProfileResources(profile);
 	if(resources == nullptr) return false;
 	if(resources->descriptorSetLayout != VK_NULL_HANDLE) return true;
-	if(!SupportsVulkanResourceProfile(m_capabilities, profile)) return false;
 	return CreateDescriptorSetLayout(profile, resources->descriptorSetLayout);
 }
 
@@ -3354,7 +3218,7 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 		}
 	}
 
-	std::array<VkDescriptorBufferInfo, VulkanCommandList::kMaxConstantBufferBindings> constantInfos = {};
+	std::array<VkDescriptorBufferInfo, kMaxDescriptorBindings> constantInfos = {};
 	for (uint32_t binding = 0; binding < drawCall.constantBuffers.size(); ++binding) {
 		const auto& constant = drawCall.constantBuffers[binding];
 		const VulkanBuffer* buffer = dynamic_cast<const VulkanBuffer*>(constant.buffer);
@@ -3396,7 +3260,7 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 		writes.push_back(constantWrite);
 	}
 
-	std::array<VkDescriptorBufferInfo, VulkanCommandList::kMaxConstantBufferBindings> storageInfos = {};
+	std::array<VkDescriptorBufferInfo, kMaxDescriptorBindings> storageInfos = {};
 	for (uint32_t binding = 0; binding < drawCall.storageBuffers.size(); ++binding) {
 		if(!IsProfileStorageBinding(pipelineState->GetResourceProfile(), binding)) continue;
 		const auto& storage = drawCall.storageBuffers[binding];
@@ -3512,14 +3376,13 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 	drawConstantWrite.pBufferInfo = &drawConstantInfo;
 	writes.push_back(drawConstantWrite);
 
-	VkPushDescriptorSetInfo pushInfo{};
-	pushInfo.sType = VK_STRUCTURE_TYPE_PUSH_DESCRIPTOR_SET_INFO;
-	pushInfo.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
-	pushInfo.layout = pipelineLayout;
-	pushInfo.set = 0;
-	pushInfo.descriptorWriteCount = static_cast<uint32_t>(writes.size());
-	pushInfo.pDescriptorWrites = writes.data();
-	vkCmdPushDescriptorSet2(commandBuffer, &pushInfo);
+	vkCmdPushDescriptorSet(
+		commandBuffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		pipelineLayout,
+		0u,
+		static_cast<uint32_t>(writes.size()),
+		writes.data());
 	return true;
 }
 
@@ -3572,34 +3435,23 @@ bool VulkanDevice::Impl::CreateShadowPipeline(const dy::RHI::GraphicsPipelineDes
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = 1;
 	layoutInfo.pSetLayouts = &profileResources->descriptorSetLayout;
-	layoutInfo.pushConstantRangeCount = 0;
-	layoutInfo.pPushConstantRanges = nullptr;
 	if (vkCreatePipelineLayout(m_context.device, &layoutInfo, nullptr, &shadowPipelineLayout) != VK_SUCCESS) {
 		return false;
 	}
 
-	// Shadow vertex shader 로드
-	VkShaderModule vertModule = VK_NULL_HANDLE;
-	try {
-		vertModule = CreateShaderModule(m_context.device, desc.shadowVertexShader, desc.shadowVertexShaderSize);
-	} catch (...) {
-		vkDestroyPipelineLayout(m_context.device, shadowPipelineLayout, nullptr);
-		shadowPipelineLayout = VK_NULL_HANDLE;
-		throw;
-	}
+	VkShaderModuleCreateInfo shaderModuleInfo{};
+	shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	shaderModuleInfo.codeSize = desc.shadowVertexShaderSize;
+	shaderModuleInfo.pCode = static_cast<const uint32_t*>(desc.shadowVertexShader);
 	VkPipelineShaderStageCreateInfo stage{};
 	stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stage.pNext = &shaderModuleInfo;
 	stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stage.module = vertModule;
 	stage.pName = "main";
 
 	// Vertex data is pulled from the storage buffer in the shader.
 	VkPipelineVertexInputStateCreateInfo vertexInput{};
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInput.vertexBindingDescriptionCount = 0;
-	vertexInput.pVertexBindingDescriptions = nullptr;
-	vertexInput.vertexAttributeDescriptionCount = 0;
-	vertexInput.pVertexAttributeDescriptions = nullptr;
 
 	VkPipelineInputAssemblyStateCreateInfo ia{};
 	ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -3629,8 +3481,6 @@ bool VulkanDevice::Impl::CreateShadowPipeline(const dy::RHI::GraphicsPipelineDes
 	ds.depthTestEnable = VK_TRUE;
 	ds.depthWriteEnable = VK_TRUE;
 	ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-	ds.depthBoundsTestEnable = VK_FALSE;
-	ds.stencilTestEnable = VK_FALSE;
 
 	// Color attachment가 0개여도 color blend state 구조체는 필요하다.
 	VkPipelineColorBlendStateCreateInfo cb{};
@@ -3662,11 +3512,8 @@ bool VulkanDevice::Impl::CreateShadowPipeline(const dy::RHI::GraphicsPipelineDes
 	pipelineInfo.pColorBlendState = &cb;
 	pipelineInfo.pDynamicState = &dyn;
 	pipelineInfo.layout = shadowPipelineLayout;
-	pipelineInfo.renderPass = VK_NULL_HANDLE;
-	pipelineInfo.subpass = 0;
 
 	const VkResult result = vkCreateGraphicsPipelines(m_context.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline);
-	vkDestroyShaderModule(m_context.device, vertModule, nullptr);
 	if(result != VK_SUCCESS)
 	{
 		vkDestroyPipelineLayout(m_context.device, shadowPipelineLayout, nullptr);
@@ -3719,7 +3566,7 @@ bool VulkanDevice::Impl::RecreateSwapchain() {
 	const VkResult swapchainResult = m_swapchain.Initialize(
 		m_context,
 		m_windowHandle,
-		dy::RHI::IsSrgbFormat(GetDesc().swapchainFormat));
+		dy::RHI::IsSrgbFormat(m_owner.GetDesc().swapchainFormat));
 	if(swapchainResult != VK_SUCCESS)
 	{
 		if(swapchainResult == VK_ERROR_DEVICE_LOST) m_deviceLost = true;
@@ -3819,7 +3666,7 @@ void VulkanDevice::Impl::UpdateBackBufferMetadata() {
 	desc.depthOrArraySize = 1;
 	desc.mipLevels = 1;
 	// 실제 스왑체인 포맷을 정직하게 보고한다(요청한 DeviceDesc 포맷과 동일하게 선택됨).
-	desc.format = GetDesc().swapchainFormat;
+	desc.format = m_owner.GetDesc().swapchainFormat;
 	desc.usage = dy::RHI::TextureUsage::RenderTarget;
 
 	if (m_backBuffer == nullptr) {

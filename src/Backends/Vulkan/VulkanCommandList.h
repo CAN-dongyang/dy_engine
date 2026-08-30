@@ -49,10 +49,6 @@ public:
 	void Begin();
 
 private:
-	static constexpr uint32_t kMaxConstantBufferBindings = kMaxDescriptorBindings;
-	static constexpr uint32_t kMaxRenderTargets = kDefaultMaxRenderTargets;
-	static constexpr uint32_t kMaxTextureBindings = kMaxDescriptorBindings;
-
 	struct BufferBinding
 	{
 		dy::RHI::IBuffer* buffer = nullptr;
@@ -75,11 +71,11 @@ private:
 		bool hasScissor = false;
 		dy::RHI::IPipelineState* pipelineState = nullptr;
 		dy::RHI::GeometryBinding geometry = {};
-		std::array<BufferBinding, kMaxConstantBufferBindings> constantBuffers = {};
-		std::array<BufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
-		std::array<dy::RHI::ITexture*, kMaxTextureBindings> textures = {};
+		std::array<BufferBinding, kMaxDescriptorBindings> constantBuffers = {};
+		std::array<BufferBinding, kMaxDescriptorBindings> storageBuffers = {};
+		std::array<dy::RHI::ITexture*, kMaxDescriptorBindings> textures = {};
 		uint32_t renderTargetCount = 0u;
-		std::array<dy::RHI::ITexture*, kMaxRenderTargets> renderTargets = {};
+		std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> renderTargets = {};
 		dy::RHI::ITexture* depthStencil = nullptr;
 		std::array<float, 4> clearColor = {};
 		float clearDepth = 1.0f;
@@ -95,7 +91,7 @@ private:
 		uint32_t threadGroupCountY = 0u;
 		uint32_t threadGroupCountZ = 0u;
 		uint32_t inlineConstantSize = 0u;
-		std::array<BufferBinding, kMaxConstantBufferBindings> storageBuffers = {};
+		std::array<BufferBinding, kMaxDescriptorBindings> storageBuffers = {};
 		std::array<uint8_t, kMaxPushConstantBytes> inlineConstants = {};
 	};
 
@@ -112,16 +108,16 @@ private:
 	std::array<float, 4> m_clearColor = { 0.4f, 0.7f, 1.0f, 1.0f };
 	float m_clearDepth = 1.0f;
 	uint32_t m_renderTargetCount = 0;
-	std::array<dy::RHI::ITexture*, kMaxRenderTargets> m_renderTargets = {};
+	std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> m_renderTargets = {};
 	dy::RHI::ITexture* m_depthStencil = nullptr;
 	dy::RHI::IPipelineState* m_boundPipeline = nullptr;
 	dy::RHI::IPipelineState* m_boundComputePipeline = nullptr;
 	std::array<uint8_t, kMaxPushConstantBytes> m_pendingPushConstants = {};
 	uint32_t m_pendingPushConstantSize = 0;
 	dy::RHI::GeometryBinding m_pendingGeometry = {};
-	std::array<BufferBinding, kMaxConstantBufferBindings> m_pendingConstantBuffers = {};
-	std::array<BufferBinding, kMaxConstantBufferBindings> m_pendingStorageBuffers = {};
-	std::array<dy::RHI::ITexture*, kMaxTextureBindings> m_pendingTextures = {};
+	std::array<BufferBinding, kMaxDescriptorBindings> m_pendingConstantBuffers = {};
+	std::array<BufferBinding, kMaxDescriptorBindings> m_pendingStorageBuffers = {};
+	std::array<dy::RHI::ITexture*, kMaxDescriptorBindings> m_pendingTextures = {};
 	bool m_hasPendingViewport = false;
 	bool m_hasPendingScissor = false;
 	dy::RHI::Viewport m_pendingViewport = {};

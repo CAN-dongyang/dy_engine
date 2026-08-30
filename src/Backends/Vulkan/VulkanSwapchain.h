@@ -11,7 +11,6 @@ public:
         VkSurfaceCapabilitiesKHR capabilities;
         std::vector<VkSurfaceFormatKHR> formats;
         std::vector<VkPresentModeKHR> presentModes;
-        bool querySucceeded = false;
 		VkResult result = VK_ERROR_INITIALIZATION_FAILED;
     };
 

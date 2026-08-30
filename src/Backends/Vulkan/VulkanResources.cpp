@@ -23,7 +23,6 @@ void VulkanResources::CreateBuffer(const VulkanContext& context, VkDeviceSize si
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
     bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     if (vkCreateBuffer(context.device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create buffer!");
@@ -99,8 +98,6 @@ void VulkanResources::CreateImage(const VulkanContext& context, uint32_t width, 
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = tiling;
     imageInfo.usage = usage;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     if (vkCreateImage(context.device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
         throw std::runtime_error("failed to create image!");
@@ -149,17 +146,13 @@ void VulkanResources::TransitionImageLayout(const VulkanContext& context, VkComm
 
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcAccessMask = VK_ACCESS_2_NONE;
-    barrier.dstAccessMask = VK_ACCESS_2_NONE;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
 
     VkPipelineStageFlags2 sourceStage;
@@ -194,14 +187,8 @@ void VulkanResources::CopyBufferToImage(const VulkanContext& context, VkCommandP
     VkCommandBuffer commandBuffer = BeginSingleTimeCommands(context, commandPool);
     VkBufferImageCopy2 region{};
     region.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
-    region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { width, height, 1 };
     VkCopyBufferToImageInfo2 copyInfo{};
     copyInfo.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
@@ -221,9 +208,7 @@ VkImageView VulkanResources::CreateImageView(VkDevice device, VkImage image, VkF
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
     viewInfo.subresourceRange.aspectMask = aspectMask;
-    viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
     VkImageView view;
     if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
