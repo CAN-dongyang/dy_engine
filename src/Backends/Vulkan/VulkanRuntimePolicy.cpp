@@ -6,82 +6,19 @@
 
 namespace dy::Backends
 {
-	bool ValidateVulkanDeviceConfig(const RHI::DeviceDesc& config, uint32_t& outDescriptorSetCount)
-	{
-		outDescriptorSetCount = 0u;
-		if(config.maxFramesInFlight == 0u || config.maxDrawsPerFrame == 0u) return false;
-		const uint64_t descriptorSetCount = static_cast<uint64_t>(config.maxFramesInFlight)
-			* static_cast<uint64_t>(config.maxDrawsPerFrame);
-		if(descriptorSetCount > std::numeric_limits<uint32_t>::max()) return false;
-		outDescriptorSetCount = static_cast<uint32_t>(descriptorSetCount);
-		return true;
-	}
-
 	bool TryComputeVulkanDescriptorPageCapacity(
 		const RHI::DeviceDesc& config,
 		uint32_t maxPagesPerFrame,
-		uint32_t& outFrameDescriptorCapacity,
-		uint32_t& outDescriptorSetCount)
+		uint32_t& outFrameDescriptorCapacity)
 	{
 		outFrameDescriptorCapacity = 0u;
-		outDescriptorSetCount = 0u;
-		uint32_t baseDescriptorSetCount = 0u;
-		if(maxPagesPerFrame == 0u || !ValidateVulkanDeviceConfig(config, baseDescriptorSetCount)) return false;
+		if(config.maxFramesInFlight == 0u || config.maxDrawsPerFrame == 0u || maxPagesPerFrame == 0u) return false;
 		const uint64_t frameCapacity = static_cast<uint64_t>(config.maxDrawsPerFrame) * maxPagesPerFrame;
+		if(frameCapacity > std::numeric_limits<uint32_t>::max()) return false;
 		const uint64_t descriptorSetCount = frameCapacity * config.maxFramesInFlight;
-		if(frameCapacity > std::numeric_limits<uint32_t>::max()
-			|| descriptorSetCount > std::numeric_limits<uint32_t>::max()) return false;
+		if(descriptorSetCount > std::numeric_limits<uint32_t>::max()) return false;
 		outFrameDescriptorCapacity = static_cast<uint32_t>(frameCapacity);
-		outDescriptorSetCount = static_cast<uint32_t>(descriptorSetCount);
 		return true;
-	}
-
-	VulkanCapabilities BuildVulkanCapabilities(
-		const VulkanDeviceLimits& limits,
-		bool supportsBindlessDynamicIndexing,
-		bool validationEnabled,
-		VkQueueFlags graphicsQueueFlags)
-	{
-		VulkanCapabilities capabilities;
-		capabilities.limits = limits;
-		capabilities.supportsBindlessDynamicIndexing = supportsBindlessDynamicIndexing;
-		capabilities.validationEnabled = validationEnabled;
-		capabilities.supportsSkinningStorageBindings =
-			limits.maxPerStageDescriptorStorageBuffers >= 4u
-			&& limits.maxDescriptorSetStorageBuffers >= 4u
-			&& limits.maxStorageBufferRange > 0u;
-		capabilities.supportsComputeSkinning =
-			capabilities.supportsSkinningStorageBindings
-			&& limits.maxPushConstantsSize >= 8u
-			&& (graphicsQueueFlags & VK_QUEUE_COMPUTE_BIT) != 0u;
-		return capabilities;
-	}
-
-	uint32_t RequiredVulkanStorageBufferCount(RHI::GraphicsResourceProfile profile)
-	{
-		switch(profile)
-		{
-		case RHI::GraphicsResourceProfile::PerDrawSkin:
-			return 4u;
-		case RHI::GraphicsResourceProfile::Batched:
-		case RHI::GraphicsResourceProfile::Bindless:
-			return 3u;
-		}
-		return std::numeric_limits<uint32_t>::max();
-	}
-
-	bool SupportsVulkanResourceProfile(
-		const VulkanCapabilities& capabilities,
-		RHI::GraphicsResourceProfile profile)
-	{
-		const uint32_t requiredStorageBuffers = RequiredVulkanStorageBufferCount(profile);
-		const bool supportsStorageBuffers =
-			capabilities.limits.maxPerStageDescriptorStorageBuffers >= requiredStorageBuffers
-			&& capabilities.limits.maxDescriptorSetStorageBuffers >= requiredStorageBuffers
-			&& capabilities.limits.maxStorageBufferRange > 0u;
-		if(!supportsStorageBuffers) return false;
-		return profile != RHI::GraphicsResourceProfile::Bindless
-			|| capabilities.supportsBindlessDynamicIndexing;
 	}
 
 	bool TryAlignVulkanUniformStride(uint64_t size, uint64_t alignment, uint64_t& outStride)
@@ -164,20 +101,4 @@ namespace dy::Backends
 		return false;
 	}
 
-	VulkanSubmissionDecision EvaluateVulkanSubmissionPreparation(
-		bool frameReady,
-		bool commandListValid,
-		bool descriptorsUpdated,
-		bool commandRecorded)
-	{
-		const bool ready = frameReady && commandListValid && descriptorsUpdated && commandRecorded;
-		return VulkanSubmissionDecision{ ready, ready, ready };
-	}
-
-	VulkanQueueFailureAction EvaluateVulkanQueueFailure(VkResult result)
-	{
-		if(result == VK_SUCCESS) return VulkanQueueFailureAction::None;
-		if(result == VK_ERROR_DEVICE_LOST) return VulkanQueueFailureAction::MarkDeviceLost;
-		return VulkanQueueFailureAction::RecreateSignaledFence;
-	}
 }

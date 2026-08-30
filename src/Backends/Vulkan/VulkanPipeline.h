@@ -20,8 +20,6 @@ public:
     VkPipelineLayout GetLayout() const { return m_pipelineLayout; }
 
 private:
-    VkShaderModule CreateShaderModule(VkDevice device, const void* shaderCode, size_t shaderSize);
-
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_graphicsPipeline = VK_NULL_HANDLE;
 };

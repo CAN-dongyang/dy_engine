@@ -92,7 +92,7 @@ void VulkanCommandList::BindTexture(uint32_t binding, dy::RHI::ITexture* texture
 
 void VulkanCommandList::SetRenderTargets(uint32_t numRenderTargets, dy::RHI::ITexture** renderTargets, dy::RHI::ITexture* depthStencil)
 {
-	m_renderTargetCount = std::min<uint32_t>(numRenderTargets, kMaxRenderTargets);
+	m_renderTargetCount = std::min<uint32_t>(numRenderTargets, kDefaultMaxRenderTargets);
 	m_renderTargets = {};
 	for (uint32_t i = 0; i < m_renderTargetCount; ++i) {
 		m_renderTargets[i] = renderTargets != nullptr ? renderTargets[i] : nullptr;

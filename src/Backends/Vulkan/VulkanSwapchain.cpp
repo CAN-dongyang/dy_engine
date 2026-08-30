@@ -15,7 +15,7 @@ namespace dy::Backends
 
 VkResult VulkanSwapchain::Initialize(const VulkanContext& context, void* windowHandle, bool preferSrgb) {
 	SwapchainSupportDetails swapchainSupport = QuerySwapchainSupport(context.physicalDevice, context.surface);
-	if(!swapchainSupport.querySucceeded || swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
+	if(swapchainSupport.result != VK_SUCCESS || swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
 		return swapchainSupport.result != VK_SUCCESS ? swapchainSupport.result : VK_ERROR_INITIALIZATION_FAILED;
 	}
 
@@ -44,8 +44,6 @@ VkResult VulkanSwapchain::Initialize(const VulkanContext& context, void* windowH
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         createInfo.queueFamilyIndexCount = 2;
         createInfo.pQueueFamilyIndices = queueFamilyIndices;
-    } else {
-        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
     createInfo.preTransform = swapchainSupport.capabilities.currentTransform;
@@ -77,9 +75,7 @@ VkResult VulkanSwapchain::Initialize(const VulkanContext& context, void* windowH
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		viewInfo.format = surfaceFormat.format;
 		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		viewInfo.subresourceRange.baseMipLevel = 0u;
 		viewInfo.subresourceRange.levelCount = 1u;
-		viewInfo.subresourceRange.baseArrayLayer = 0u;
 		viewInfo.subresourceRange.layerCount = 1u;
 		result = vkCreateImageView(context.device, &viewInfo, nullptr, &newImageViews[imageIndex]);
 		if(result != VK_SUCCESS) {
@@ -143,7 +139,6 @@ VulkanSwapchain::SwapchainSupportDetails VulkanSwapchain::QuerySwapchainSupport(
 		}
     }
 
-	details.querySucceeded = true;
 	details.result = VK_SUCCESS;
     return details;
 }
