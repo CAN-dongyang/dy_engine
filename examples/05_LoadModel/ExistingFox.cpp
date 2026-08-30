@@ -33,21 +33,23 @@ namespace
 
 int main(int argc, char** argv)
 {
+	std::unique_ptr<dy::Platform::Window> window;
 	std::unique_ptr<dy::RHI::IDevice> device;
 	dy::Graphics::Renderer renderer;
 	bool rendererInitialized = false;
+	int result = 0;
 	try
 	{
 		dy::Examples::LoadModelOptions options;
 		std::string optionError;
-		if(!dy::Examples::ParseLoadModelOptions(argc, argv, options, optionError))
+		if(!dy::Examples::ParseFoxComparisonOptions(argc, argv, options, optionError))
 		{
 			std::cerr << optionError << '\n';
 			return -1;
 		}
 
-		dy::Platform::Window window(1280, 720, "ExistingFox");
-		device.reset(dy::RHI::IDevice::Create(window.GetHandle()));
+		window = std::make_unique<dy::Platform::Window>(1280, 720, "ExistingFox");
+		device.reset(dy::RHI::IDevice::Create(window->GetHandle()));
 		if(!device) throw std::runtime_error("Failed to create device.");
 
 		const std::string extension = ShaderExtension();
@@ -63,15 +65,29 @@ int main(int argc, char** argv)
 		dy::Graphics::Scene scene;
 		dy::Examples::FoxLightDemo demo(scene, renderer);
 
-		const auto startTime = std::chrono::steady_clock::now();
-		auto previousFrameTime = startTime;
-		while(window.IsRunning())
+		std::chrono::steady_clock::time_point startTime;
+		std::chrono::steady_clock::time_point previousFrameTime;
+		bool clockStarted = false;
+		while(window->IsRunning())
 		{
-			window.PollEvents();
+			window->PollEvents();
+			if(!window->IsRunning()) break;
+
 			const auto now = std::chrono::steady_clock::now();
-			const float deltaSeconds = std::chrono::duration<float>(now - previousFrameTime).count();
-			const float elapsedSeconds = std::chrono::duration<float>(now - startTime).count();
-			previousFrameTime = now;
+			float deltaSeconds = 0.0f;
+			float elapsedSeconds = 0.0f;
+			if(!clockStarted)
+			{
+				startTime = now;
+				previousFrameTime = now;
+				clockStarted = true;
+			}
+			else
+			{
+				deltaSeconds = std::chrono::duration<float>(now - previousFrameTime).count();
+				elapsedSeconds = std::chrono::duration<float>(now - startTime).count();
+				previousFrameTime = now;
+			}
 			demo.Update(deltaSeconds, elapsedSeconds);
 			device->BeginFrame();
 			renderer.Render(scene, device.get());
@@ -79,14 +95,15 @@ int main(int argc, char** argv)
 			if(options.smokeSeconds > 0.0f && elapsedSeconds >= options.smokeSeconds) break;
 		}
 
-		renderer.Shutdown(device.get());
-		rendererInitialized = false;
-		return 0;
 	}
 	catch(const std::exception& exception)
 	{
-		if(rendererInitialized) renderer.Shutdown(device.get());
 		std::cerr << exception.what() << '\n';
-		return -1;
+		result = -1;
 	}
+
+	if(rendererInitialized) renderer.Shutdown(device.get());
+	device.reset();
+	window.reset();
+	return result;
 }

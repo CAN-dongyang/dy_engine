@@ -38,16 +38,6 @@ add_executable(SimpleFox
     Shaders/mesh_ps.hlsl
 )
 
-set_source_files_properties(
-    Shaders/mesh_vs.glsl
-    Shaders/mesh_ps.glsl
-    Shaders/mesh_shadow_vs.glsl
-	Shaders/mesh_skinning_cs.glsl
-    Shaders/mesh_vs.hlsl
-    Shaders/mesh_ps.hlsl
-    PROPERTIES HEADER_FILE_ONLY TRUE
-)
-
 dy_setup_example(SimpleFox)
 
 add_executable(ExistingFox
@@ -63,6 +53,14 @@ add_executable(ExistingFox
 )
 
 dy_setup_example(ExistingFox)
+
+foreach(target IN ITEMS SimpleFox ExistingFox)
+	set_target_properties(${target} PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}/$<CONFIG>")
+	if(MSVC)
+		target_compile_options(${target} PRIVATE /EHsc)
+	endif()
+endforeach()
 
 function(copy_fox_model target)
     add_custom_command(TARGET ${target} POST_BUILD

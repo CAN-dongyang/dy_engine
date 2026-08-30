@@ -20,4 +20,10 @@ namespace dy::Examples
 		const char* const* arguments,
 		LoadModelOptions& outOptions,
 		std::string& outError);
+
+	[[nodiscard]] bool ParseFoxComparisonOptions(
+		int argumentCount,
+		const char* const* arguments,
+		LoadModelOptions& outOptions,
+		std::string& outError);
 }

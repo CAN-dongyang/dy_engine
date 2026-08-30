@@ -113,4 +113,29 @@ namespace dy::Examples
 		}
 		return true;
 	}
+
+	bool ParseFoxComparisonOptions(
+		int argumentCount,
+		const char* const* arguments,
+		LoadModelOptions& outOptions,
+		std::string& outError)
+	{
+		if(argumentCount < 0 || (argumentCount > 0 && arguments == nullptr))
+			return ParseLoadModelOptions(argumentCount, arguments, outOptions, outError);
+
+		constexpr std::string_view smokePrefix = "--smoke-seconds=";
+		for(int argumentIndex = 1; argumentIndex < argumentCount; ++argumentIndex)
+		{
+			const std::string_view argument = arguments[argumentIndex] != nullptr
+				? std::string_view(arguments[argumentIndex])
+				: std::string_view{};
+			if(argument.rfind(smokePrefix, 0u) != 0u)
+			{
+				outOptions = {};
+				outError = "unsupported Fox comparison option: " + std::string(argument);
+				return false;
+			}
+		}
+		return ParseLoadModelOptions(argumentCount, arguments, outOptions, outError);
+	}
 }

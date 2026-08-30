@@ -10,6 +10,10 @@
 #include "Graphics/Renderer.h"
 #include "Graphics/Scene.h"
 
+#ifndef DY_SHADER_DIR
+#define DY_SHADER_DIR "./Shaders"
+#endif
+
 namespace dy
 {
 	class Application
@@ -21,8 +25,6 @@ namespace dy
 			uint32_t height = 720u,
 			Graphics::RendererDesc rendererDesc = {})
 			: m_window(std::make_unique<Platform::Window>(width, height, title))
-			, m_startTime(std::chrono::steady_clock::now())
-			, m_previousFrameTime(m_startTime)
 		{
 			if(rendererDesc.vertexShaderPath == nullptr)
 			{
@@ -61,10 +63,23 @@ namespace dy
 			if(!m_initialized || !m_window->IsRunning()) return false;
 
 			m_window->PollEvents();
+			if(!m_window->IsRunning()) return false;
+
 			const auto now = std::chrono::steady_clock::now();
-			m_deltaSeconds = std::chrono::duration<float>(now - m_previousFrameTime).count();
-			m_elapsedSeconds = std::chrono::duration<float>(now - m_startTime).count();
-			m_previousFrameTime = now;
+			if(!m_clockStarted)
+			{
+				m_startTime = now;
+				m_previousFrameTime = now;
+				m_deltaSeconds = 0.0f;
+				m_elapsedSeconds = 0.0f;
+				m_clockStarted = true;
+			}
+			else
+			{
+				m_deltaSeconds = std::chrono::duration<float>(now - m_previousFrameTime).count();
+				m_elapsedSeconds = std::chrono::duration<float>(now - m_startTime).count();
+				m_previousFrameTime = now;
+			}
 			m_device->BeginFrame();
 			return true;
 		}
@@ -105,5 +120,6 @@ namespace dy
 		float m_deltaSeconds = 0.0f;
 		float m_elapsedSeconds = 0.0f;
 		bool m_initialized = false;
+		bool m_clockStarted = false;
 	};
 }

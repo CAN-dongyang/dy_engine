@@ -11,7 +11,7 @@ int main(int argc, char** argv)
 	{
 		dy::Examples::LoadModelOptions options;
 		std::string optionError;
-		if(!dy::Examples::ParseLoadModelOptions(argc, argv, options, optionError))
+		if(!dy::Examples::ParseFoxComparisonOptions(argc, argv, options, optionError))
 		{
 			std::cerr << optionError << '\n';
 			return -1;

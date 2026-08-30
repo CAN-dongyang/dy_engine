@@ -31,7 +31,7 @@ namespace dy::Examples
 			if(!Graphics::AddModelToScene(m_scene, fox, &m_fox) || !IsValid(m_fox))
 				throw std::runtime_error("Failed to load Models/Fox.glb.");
 			m_initialRootTransform = m_scene.GetModelInstance(m_fox).rootTransform;
-			if(!m_scene.PlayAnimation(m_fox, 1u, true) || !m_scene.SetAnimationLoop(m_fox, true))
+			if(!m_scene.PlayAnimation(m_fox, 1u, true))
 				throw std::runtime_error("Failed to configure Fox animation.");
 
 			Graphics::DirectionalLight directional = {};
