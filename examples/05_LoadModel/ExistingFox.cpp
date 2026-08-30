@@ -33,6 +33,9 @@ namespace
 
 int main(int argc, char** argv)
 {
+	std::unique_ptr<dy::RHI::IDevice> device;
+	dy::Graphics::Renderer renderer;
+	bool rendererInitialized = false;
 	try
 	{
 		dy::Examples::LoadModelOptions options;
@@ -44,7 +47,7 @@ int main(int argc, char** argv)
 		}
 
 		dy::Platform::Window window(1280, 720, "ExistingFox");
-		std::unique_ptr<dy::RHI::IDevice> device(dy::RHI::IDevice::Create(window.GetHandle()));
+		device.reset(dy::RHI::IDevice::Create(window.GetHandle()));
 		if(!device) throw std::runtime_error("Failed to create device.");
 
 		const std::string extension = ShaderExtension();
@@ -54,9 +57,9 @@ int main(int argc, char** argv)
 		rendererDesc.vertexShaderPath = vertexShaderPath.c_str();
 		rendererDesc.pixelShaderPath = pixelShaderPath.c_str();
 
-		dy::Graphics::Renderer renderer;
 		if(!renderer.Initialize(device.get(), rendererDesc))
 			throw std::runtime_error("Failed to initialize renderer.");
+		rendererInitialized = true;
 		dy::Graphics::Scene scene;
 		dy::Examples::FoxLightDemo demo(scene, renderer);
 
@@ -77,10 +80,12 @@ int main(int argc, char** argv)
 		}
 
 		renderer.Shutdown(device.get());
+		rendererInitialized = false;
 		return 0;
 	}
 	catch(const std::exception& exception)
 	{
+		if(rendererInitialized) renderer.Shutdown(device.get());
 		std::cerr << exception.what() << '\n';
 		return -1;
 	}

@@ -48,7 +48,7 @@ namespace dy::Examples
 		void Update(float deltaSeconds, float elapsedSeconds)
 		{
 			m_scene.GetModelInstance(m_fox).rootTransform =
-				Math::Translation(Math::float3(0.0f, 0.0f, 0.08f * std::sin(elapsedSeconds)))
+				Math::Translation(Math::float3(std::sin(elapsedSeconds * 0.8f) * 1.5f, 0.0f, 0.0f))
 				* m_initialRootTransform;
 			if(!m_scene.UpdateAnimations(deltaSeconds).Succeeded())
 				throw std::runtime_error("Failed to update Fox animation.");
