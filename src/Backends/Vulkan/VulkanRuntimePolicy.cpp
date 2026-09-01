@@ -6,18 +6,16 @@
 
 namespace dy::Backends
 {
-	bool TryComputeVulkanDescriptorPageCapacity(
+	bool TryComputeVulkanDescriptorCapacity(
 		const RHI::DeviceDesc& config,
-		uint32_t maxPagesPerFrame,
 		uint32_t& outFrameDescriptorCapacity)
 	{
 		outFrameDescriptorCapacity = 0u;
-		if(config.maxFramesInFlight == 0u || config.maxDrawsPerFrame == 0u || maxPagesPerFrame == 0u) return false;
-		const uint64_t frameCapacity = static_cast<uint64_t>(config.maxDrawsPerFrame) * maxPagesPerFrame;
-		if(frameCapacity > std::numeric_limits<uint32_t>::max()) return false;
-		const uint64_t descriptorSetCount = frameCapacity * config.maxFramesInFlight;
+		if(config.maxFramesInFlight == 0u || config.maxDrawsPerFrame == 0u) return false;
+		const uint64_t descriptorSetCount =
+			static_cast<uint64_t>(config.maxDrawsPerFrame) * config.maxFramesInFlight;
 		if(descriptorSetCount > std::numeric_limits<uint32_t>::max()) return false;
-		outFrameDescriptorCapacity = static_cast<uint32_t>(frameCapacity);
+		outFrameDescriptorCapacity = config.maxDrawsPerFrame;
 		return true;
 	}
 
@@ -41,18 +39,24 @@ namespace dy::Backends
 	bool PrepareVulkanDrawConstants(
 		const uint8_t* capturedConstants,
 		uint32_t capturedSize,
+		const RHI::ShaderLayoutDesc& layout,
 		uint32_t firstIndex,
 		int32_t vertexOffset,
 		uint32_t firstVertex,
-		Graphics::RendererShaderLayout::DrawConstants& outConstants)
+		uint8_t* outConstants,
+		uint32_t outCapacity)
 	{
-		outConstants = {};
+		const uint32_t constantSize = layout.pushConstantRangeSize;
+		const uint32_t metadataOffset = layout.drawMetadataPushConstantOffset;
+		if(outConstants == nullptr || constantSize == 0u || constantSize > outCapacity) return false;
+		if(metadataOffset > constantSize || constantSize - metadataOffset < 3u * sizeof(uint32_t)) return false;
 		if(capturedSize > 0u && capturedConstants == nullptr) return false;
-		const size_t copySize = std::min<size_t>(capturedSize, sizeof(outConstants));
-		if(copySize > 0u) std::memcpy(&outConstants, capturedConstants, copySize);
-		outConstants.firstIndex = firstIndex;
-		outConstants.vertexOffset = vertexOffset;
-		outConstants.firstVertex = firstVertex;
+		std::memset(outConstants, 0, constantSize);
+		const size_t copySize = std::min<size_t>(capturedSize, constantSize);
+		if(copySize > 0u) std::memcpy(outConstants, capturedConstants, copySize);
+		std::memcpy(outConstants + metadataOffset, &firstIndex, sizeof(firstIndex));
+		std::memcpy(outConstants + metadataOffset + sizeof(firstIndex), &vertexOffset, sizeof(vertexOffset));
+		std::memcpy(outConstants + metadataOffset + sizeof(firstIndex) + sizeof(vertexOffset), &firstVertex, sizeof(firstVertex));
 		return true;
 	}
 

@@ -5,7 +5,6 @@
 #include <vulkan/vulkan.h>
 
 #include "RHI/IDevice.h"
-#include "Graphics/RendererShaderLayout.h"
 
 namespace dy::Backends
 {
@@ -25,9 +24,8 @@ namespace dy::Backends
 		VulkanDeviceLimits limits;
 		bool supportsComputeSkinning = false;
 	};
-	[[nodiscard]] bool TryComputeVulkanDescriptorPageCapacity(
+	[[nodiscard]] bool TryComputeVulkanDescriptorCapacity(
 		const RHI::DeviceDesc& config,
-		uint32_t maxPagesPerFrame,
 		uint32_t& outFrameDescriptorCapacity);
 	[[nodiscard]] bool TryAlignVulkanUniformStride(
 		uint64_t size,
@@ -36,10 +34,12 @@ namespace dy::Backends
 	[[nodiscard]] bool PrepareVulkanDrawConstants(
 		const uint8_t* capturedConstants,
 		uint32_t capturedSize,
+		const RHI::ShaderLayoutDesc& layout,
 		uint32_t firstIndex,
 		int32_t vertexOffset,
 		uint32_t firstVertex,
-		Graphics::RendererShaderLayout::DrawConstants& outConstants);
+		uint8_t* outConstants,
+		uint32_t outCapacity);
 	[[nodiscard]] bool ValidateStorageBufferBinding(
 		const VulkanCapabilities& capabilities,
 		uint64_t offset,

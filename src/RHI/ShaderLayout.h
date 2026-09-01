@@ -20,7 +20,11 @@ namespace dy::RHI
 		BindingIndex bindlessMaterialStorageBinding = 10;
 		BindingIndex bindlessTransformStorageBinding = 11;
 		BindingIndex bindlessDrawStorageBinding = 12;
+		BindingIndex skinInfluenceStorageBinding = 13;
+		BindingIndex skinPaletteStorageBinding = 14;
+		BindingIndex drawConstantsBinding = 15;
 		uint32_t descriptorBindingCount = 13;
+		uint32_t extendedDescriptorBindingCount = 16;
 
 		// 디스크립터 풀 크기 산정용 개수
 		uint32_t materialTextureBindingCount = 5;
@@ -34,6 +38,9 @@ namespace dy::RHI
 		uint32_t pushConstantRangeSize = 208;
 		uint32_t drawModePushConstantOffset = 128;
 		uint32_t drawMetadataPushConstantOffset = 132;
+		uint32_t shadowViewDrawConstantOffset = 156;
+		uint32_t shadowInfoConstantOffset = 400;
+		uint32_t maxShadowViews = 6;
 
 		// 백엔드가 푸시상수에서 그림자 플래그를 읽을 때 사용
 		uint32_t castShadowFlag = 64;

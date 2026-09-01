@@ -12,7 +12,8 @@ namespace dy::RHI
 	{
 		PerDrawSkin,
 		Batched,
-		Bindless
+		Bindless,
+		Count
 	};
 
 	struct GraphicsPipelineDesc

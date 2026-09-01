@@ -190,7 +190,11 @@ namespace dy::Graphics::RendererShaderLayout
 	static_assert(RHI::ShaderLayoutDesc{}.bindlessMaterialStorageBinding == kBindlessMaterialStorageBinding, "ShaderLayoutDesc drift: bindless material binding");
 	static_assert(RHI::ShaderLayoutDesc{}.bindlessTransformStorageBinding == kBindlessTransformStorageBinding, "ShaderLayoutDesc drift: bindless transform binding");
 	static_assert(RHI::ShaderLayoutDesc{}.bindlessDrawStorageBinding == kBindlessDrawStorageBinding, "ShaderLayoutDesc drift: bindless draw binding");
+	static_assert(RHI::ShaderLayoutDesc{}.skinInfluenceStorageBinding == kSkinInfluenceStorageBinding, "ShaderLayoutDesc drift: skin influence binding");
+	static_assert(RHI::ShaderLayoutDesc{}.skinPaletteStorageBinding == kSkinPaletteStorageBinding, "ShaderLayoutDesc drift: skin palette binding");
+	static_assert(RHI::ShaderLayoutDesc{}.drawConstantsBinding == kVulkanDrawConstantsBinding, "ShaderLayoutDesc drift: draw constants binding");
 	static_assert(RHI::ShaderLayoutDesc{}.descriptorBindingCount == kDescriptorBindingCount, "ShaderLayoutDesc drift: descriptor binding count");
+	static_assert(RHI::ShaderLayoutDesc{}.extendedDescriptorBindingCount == kVulkanDescriptorBindingCount, "ShaderLayoutDesc drift: extended descriptor binding count");
 	static_assert(RHI::ShaderLayoutDesc{}.materialTextureBindingCount == kMaterialTextureBindingCount, "ShaderLayoutDesc drift: material texture count");
 	static_assert(RHI::ShaderLayoutDesc{}.samplerDescriptorCount == kSamplerDescriptorCount, "ShaderLayoutDesc drift: sampler descriptor count");
 	static_assert(RHI::ShaderLayoutDesc{}.constantBufferDescriptorCount == kConstantBufferDescriptorCount, "ShaderLayoutDesc drift: constant buffer descriptor count");
@@ -199,5 +203,8 @@ namespace dy::Graphics::RendererShaderLayout
 	static_assert(RHI::ShaderLayoutDesc{}.pushConstantRangeSize == kPushConstantRangeSize, "ShaderLayoutDesc drift: push constant range size");
 	static_assert(RHI::ShaderLayoutDesc{}.drawModePushConstantOffset == kDrawModePushConstantOffset, "ShaderLayoutDesc drift: draw mode offset");
 	static_assert(RHI::ShaderLayoutDesc{}.drawMetadataPushConstantOffset == kDrawMetadataPushConstantOffset, "ShaderLayoutDesc drift: draw metadata offset");
+	static_assert(RHI::ShaderLayoutDesc{}.shadowViewDrawConstantOffset == offsetof(DrawConstants, emissiveColor) + 3u * sizeof(float), "ShaderLayoutDesc drift: shadow view offset");
+	static_assert(RHI::ShaderLayoutDesc{}.shadowInfoConstantOffset == offsetof(RendererShadowConstants, shadowInfo), "ShaderLayoutDesc drift: shadow info offset");
+	static_assert(RHI::ShaderLayoutDesc{}.maxShadowViews == kMaxShadowViews, "ShaderLayoutDesc drift: shadow view count");
 	static_assert(RHI::ShaderLayoutDesc{}.castShadowFlag == kCastShadowFlag, "ShaderLayoutDesc drift: cast shadow flag");
 }

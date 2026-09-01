@@ -8,7 +8,6 @@
 #include "RHI/IBuffer.h"
 #include "RHI/IPipelineState.h"
 #include "RHI/ITexture.h"
-#include "Graphics/RendererShaderLayout.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
@@ -30,13 +29,12 @@
 namespace dy::Backends
 {
 namespace {
-	namespace Layout = dy::Graphics::RendererShaderLayout;
 	const char* VkResultToString(VkResult result);
 	constexpr const char* kValidationLayerName = "VK_LAYER_KHRONOS_validation";
 	constexpr const uint32_t kFallbackTextureWidth = 2;
 	constexpr const uint32_t kFallbackTextureHeight = 2;
-	constexpr uint32_t kMaxDescriptorPagesPerFrame = 4u;
-	constexpr size_t kGraphicsResourceProfileCount = 3u;
+	constexpr size_t kGraphicsResourceProfileCount =
+		static_cast<size_t>(dy::RHI::GraphicsResourceProfile::Count);
 	constexpr std::array<unsigned char, 16> kFallbackTexturePixels = {
 		255, 255, 255, 255, 64, 64, 64, 255,
 		64, 64, 64, 255, 255, 255, 255, 255
@@ -54,14 +52,17 @@ namespace {
 		return static_cast<size_t>(profile);
 	}
 
-	bool IsProfileStorageBinding(dy::RHI::GraphicsResourceProfile profile, uint32_t binding)
+	bool IsProfileStorageBinding(
+		dy::RHI::GraphicsResourceProfile profile,
+		uint32_t binding,
+		const dy::RHI::ShaderLayoutDesc& layout)
 	{
 		if(profile == dy::RHI::GraphicsResourceProfile::PerDrawSkin)
 		{
-			return binding == Layout::kSkinInfluenceStorageBinding
-				|| binding == Layout::kSkinPaletteStorageBinding;
+			return binding == layout.skinInfluenceStorageBinding
+				|| binding == layout.skinPaletteStorageBinding;
 		}
-		return binding == Layout::kBindlessTransformStorageBinding;
+		return binding == layout.bindlessTransformStorageBinding;
 	}
 
 	bool IsValidationEnabled() {
@@ -1152,12 +1153,11 @@ VulkanDevice::Impl::~Impl() {
 int VulkanDevice::Impl::Initialize(const void* windowHandle, const dy::RHI::DeviceDesc& desc) {
 	m_windowHandle = const_cast<void*>(windowHandle);
 	if (!m_windowHandle) return -1;
-	if(!TryComputeVulkanDescriptorPageCapacity(
+	if(!TryComputeVulkanDescriptorCapacity(
 		desc,
-		kMaxDescriptorPagesPerFrame,
 		m_descriptorCapacityPerFrame))
 	{
-		SDL_Log("Invalid Vulkan descriptor configuration: frames, draws, and pages must be non-zero and expanded capacity must fit uint32.");
+		SDL_Log("Invalid Vulkan descriptor configuration: frames and draws must be non-zero and total capacity must fit uint32.");
 		return -1;
 	}
 	m_maxFramesInFlight = desc.maxFramesInFlight;
@@ -2773,7 +2773,7 @@ bool VulkanDevice::Impl::CreateDrawConstantBuffers()
 {
 	uint64_t alignedStride = 0u;
 	if(!TryAlignVulkanUniformStride(
-		sizeof(Layout::DrawConstants),
+		m_shaderLayout.pushConstantRangeSize,
 		m_capabilities.limits.minUniformBufferOffsetAlignment,
 		alignedStride))
 	{
@@ -2782,7 +2782,7 @@ bool VulkanDevice::Impl::CreateDrawConstantBuffers()
 	}
 	if(alignedStride > std::numeric_limits<uint32_t>::max()) return false;
 	const uint64_t drawConstantCapacity = static_cast<uint64_t>(m_descriptorCapacityPerFrame)
-		* (static_cast<uint64_t>(Layout::kMaxShadowViews) + 1u);
+		* (static_cast<uint64_t>(m_shaderLayout.maxShadowViews) + 1u);
 	if(drawConstantCapacity == 0u || drawConstantCapacity > std::numeric_limits<uint32_t>::max()) return false;
 	const uint64_t totalSize = alignedStride * drawConstantCapacity;
 	if(totalSize / drawConstantCapacity != alignedStride) return false;
@@ -2834,21 +2834,24 @@ void VulkanDevice::Impl::ResolveShadowAtlasConfig(const VulkanCommandList& comma
 	const auto& shadowBinding = drawCall.constantBuffers[binding];
 	const VulkanBuffer* shadowBuffer = dynamic_cast<const VulkanBuffer*>(shadowBinding.buffer);
 	if(shadowBuffer == nullptr) return;
-	Layout::RendererShadowConstants shadow = {};
-	if(!shadowBuffer->Read(shadowBinding.offset, &shadow, sizeof(shadow))) return;
-	if(!std::isfinite(shadow.shadowInfo.y) || !std::isfinite(shadow.shadowInfo.z) || !std::isfinite(shadow.shadowInfo.w)) return;
+	const uint64_t shadowInfoOffset =
+		static_cast<uint64_t>(shadowBinding.offset) + m_shaderLayout.shadowInfoConstantOffset;
+	if(shadowInfoOffset > std::numeric_limits<uint32_t>::max()) return;
+	std::array<float, 4u> shadowInfo = {};
+	if(!shadowBuffer->Read(static_cast<uint32_t>(shadowInfoOffset), shadowInfo.data(), sizeof(shadowInfo))) return;
+	if(!std::isfinite(shadowInfo[1]) || !std::isfinite(shadowInfo[2]) || !std::isfinite(shadowInfo[3])) return;
 	m_activeShadowViewCount = std::clamp(
-		static_cast<uint32_t>(std::max(shadow.shadowInfo.y, 0.0f) + 0.5f),
+		static_cast<uint32_t>(std::max(shadowInfo[1], 0.0f) + 0.5f),
 		0u,
-		Layout::kMaxShadowViews);
+		m_shaderLayout.maxShadowViews);
 	m_shadowAtlasColumns = std::clamp(
-		static_cast<uint32_t>(std::max(shadow.shadowInfo.z, 1.0f) + 0.5f),
+		static_cast<uint32_t>(std::max(shadowInfo[2], 1.0f) + 0.5f),
 		1u,
-		Layout::kMaxShadowViews);
+		m_shaderLayout.maxShadowViews);
 	m_shadowAtlasRows = std::clamp(
-		static_cast<uint32_t>(std::max(shadow.shadowInfo.w, 1.0f) + 0.5f),
+		static_cast<uint32_t>(std::max(shadowInfo[3], 1.0f) + 0.5f),
 		1u,
-		Layout::kMaxShadowViews);
+		m_shaderLayout.maxShadowViews);
 	const uint64_t atlasCapacity = static_cast<uint64_t>(m_shadowAtlasColumns) * m_shadowAtlasRows;
 	if(m_activeShadowViewCount > atlasCapacity) m_activeShadowViewCount = static_cast<uint32_t>(atlasCapacity);
 }
@@ -2860,11 +2863,9 @@ bool VulkanDevice::Impl::UploadDrawConstants(const VulkanCommandList& commandLis
 	{
 		if(!m_drawCapacityErrorReported)
 		{
-			SDL_Log("Vulkan draw capacity exceeded: requested=%zu capacity=%u pageSize=%u pages=%u.",
+			SDL_Log("Vulkan draw capacity exceeded: requested=%zu capacity=%u.",
 				commandList.m_drawCalls.size(),
-				m_descriptorCapacityPerFrame,
-				m_maxDrawsPerFrame,
-				kMaxDescriptorPagesPerFrame);
+				m_descriptorCapacityPerFrame);
 			m_drawCapacityErrorReported = true;
 		}
 		return false;
@@ -2878,38 +2879,41 @@ bool VulkanDevice::Impl::UploadDrawConstants(const VulkanCommandList& commandLis
 	{
 		const VulkanCommandList::DrawCall& drawCall = commandList.m_drawCalls[drawIndex];
 		uint32_t firstVertex = drawCall.startVertex;
-		if(drawCall.indexed && drawCall.pushConstantSize >= offsetof(Layout::DrawConstants, firstVertex) + sizeof(firstVertex))
+		const uint32_t firstVertexOffset = m_shaderLayout.drawMetadataPushConstantOffset + 2u * sizeof(uint32_t);
+		if(drawCall.indexed && drawCall.pushConstantSize >= firstVertexOffset + sizeof(firstVertex))
 		{
 			std::memcpy(
 				&firstVertex,
-				drawCall.pushConstants.data() + offsetof(Layout::DrawConstants, firstVertex),
+				drawCall.pushConstants.data() + firstVertexOffset,
 				sizeof(firstVertex));
 		}
-		Layout::DrawConstants constants{};
+		uint8_t* constants = frame.mapped + static_cast<size_t>(m_drawConstantStride) * drawIndex;
 		if(!PrepareVulkanDrawConstants(
 			drawCall.pushConstants.data(),
 			drawCall.pushConstantSize,
+			m_shaderLayout,
 			drawCall.firstIndex,
 			drawCall.baseVertex,
 			firstVertex,
-			constants))
+			constants,
+			static_cast<uint32_t>(m_drawConstantStride)))
 		{
 			return false;
 		}
-		std::memcpy(
-			frame.mapped + static_cast<size_t>(m_drawConstantStride) * drawIndex,
-			&constants,
-			sizeof(constants));
+		if(m_shaderLayout.shadowViewDrawConstantOffset > m_shaderLayout.pushConstantRangeSize
+			|| m_shaderLayout.pushConstantRangeSize - m_shaderLayout.shadowViewDrawConstantOffset < sizeof(float)) return false;
 		for(uint32_t shadowView = 0u; shadowView < m_activeShadowViewCount; ++shadowView)
 		{
-			Layout::DrawConstants shadowConstants = constants;
-			shadowConstants.emissiveColor.w = static_cast<float>(shadowView);
 			const uint64_t shadowSlot = (static_cast<uint64_t>(shadowView) + 1u) * m_descriptorCapacityPerFrame + drawIndex;
 			if(shadowSlot >= m_drawConstantCapacity) return false;
+			uint8_t* shadowConstants =
+				frame.mapped + static_cast<size_t>(m_drawConstantStride) * static_cast<size_t>(shadowSlot);
+			std::memcpy(shadowConstants, constants, m_shaderLayout.pushConstantRangeSize);
+			const float shadowViewValue = static_cast<float>(shadowView);
 			std::memcpy(
-				frame.mapped + static_cast<size_t>(m_drawConstantStride) * static_cast<size_t>(shadowSlot),
-				&shadowConstants,
-				sizeof(shadowConstants));
+				shadowConstants + m_shaderLayout.shadowViewDrawConstantOffset,
+				&shadowViewValue,
+				sizeof(shadowViewValue));
 		}
 	}
 	return true;
@@ -2969,14 +2973,14 @@ bool VulkanDevice::Impl::CreateDescriptorSetLayout(
 	addBinding(m_shaderLayout.indexStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 	if(profile == dy::RHI::GraphicsResourceProfile::PerDrawSkin)
 	{
-		addBinding(Layout::kSkinInfluenceStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
-		addBinding(Layout::kSkinPaletteStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
+		addBinding(m_shaderLayout.skinInfluenceStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
+		addBinding(m_shaderLayout.skinPaletteStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 	}
 	else
 	{
 		addBinding(m_shaderLayout.bindlessTransformStorageBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 	}
-	addBinding(Layout::kVulkanDrawConstantsBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+	addBinding(m_shaderLayout.drawConstantsBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	VkDescriptorSetLayoutCreateInfo info{};
 	info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -3176,7 +3180,7 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 	if (vertexBuffer == nullptr || (drawCall.indexed && indexBuffer == nullptr)) return false;
 
 	std::vector<VkWriteDescriptorSet> writes;
-	writes.reserve(Layout::kVulkanDescriptorBindingCount);
+	writes.reserve(m_shaderLayout.extendedDescriptorBindingCount);
 
 	const VulkanTexture* fallbackTexture = static_cast<const VulkanTexture*>(m_fallbackTexture);
 	const bool hasFallbackTexture =
@@ -3262,7 +3266,7 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 
 	std::array<VkDescriptorBufferInfo, kMaxDescriptorBindings> storageInfos = {};
 	for (uint32_t binding = 0; binding < drawCall.storageBuffers.size(); ++binding) {
-		if(!IsProfileStorageBinding(pipelineState->GetResourceProfile(), binding)) continue;
+		if(!IsProfileStorageBinding(pipelineState->GetResourceProfile(), binding, m_shaderLayout)) continue;
 		const auto& storage = drawCall.storageBuffers[binding];
 		const VulkanBuffer* buffer = dynamic_cast<const VulkanBuffer*>(storage.buffer);
 		if (buffer == nullptr) continue;
@@ -3367,10 +3371,10 @@ bool VulkanDevice::Impl::PushDrawDescriptors(
 	VkDescriptorBufferInfo drawConstantInfo{};
 	drawConstantInfo.buffer = drawConstantFrame.buffer;
 	drawConstantInfo.offset = m_drawConstantStride * drawConstantSlot;
-	drawConstantInfo.range = sizeof(Layout::DrawConstants);
+	drawConstantInfo.range = m_shaderLayout.pushConstantRangeSize;
 	VkWriteDescriptorSet drawConstantWrite{};
 	drawConstantWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	drawConstantWrite.dstBinding = Layout::kVulkanDrawConstantsBinding;
+	drawConstantWrite.dstBinding = m_shaderLayout.drawConstantsBinding;
 	drawConstantWrite.descriptorCount = 1u;
 	drawConstantWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	drawConstantWrite.pBufferInfo = &drawConstantInfo;
