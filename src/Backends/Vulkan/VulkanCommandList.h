@@ -77,8 +77,6 @@ private:
 		uint32_t renderTargetCount = 0u;
 		std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> renderTargets = {};
 		dy::RHI::ITexture* depthStencil = nullptr;
-		std::array<float, 4> clearColor = {};
-		float clearDepth = 1.0f;
 		dy::RHI::Viewport viewport = {};
 		dy::RHI::Rect scissor = {};
 		std::array<uint8_t, kMaxPushConstantBytes> pushConstants = {};
@@ -104,9 +102,34 @@ private:
 		uint32_t size = 0u;
 	};
 
+	struct DepthClear
+	{
+		dy::RHI::ITexture* texture = nullptr;
+		float depth = 1.0f;
+	};
+
+	struct ColorClear
+	{
+		dy::RHI::ITexture* texture = nullptr;
+		std::array<float, 4> color = {};
+	};
+
+	enum class WorkType : uint8_t
+	{
+		Draw,
+		Dispatch,
+		BufferBarrier,
+		ClearColor,
+		ClearDepth
+	};
+
+	struct WorkItem
+	{
+		WorkType type = WorkType::Draw;
+		uint32_t index = 0u;
+	};
+
 	friend struct VulkanDevice::Impl;
-	std::array<float, 4> m_clearColor = { 0.4f, 0.7f, 1.0f, 1.0f };
-	float m_clearDepth = 1.0f;
 	uint32_t m_renderTargetCount = 0;
 	std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> m_renderTargets = {};
 	dy::RHI::ITexture* m_depthStencil = nullptr;
@@ -125,6 +148,9 @@ private:
 	std::vector<DrawCall> m_drawCalls;
 	std::vector<ComputeDispatch> m_computeDispatches;
 	std::vector<BufferBarrier> m_bufferBarriers;
+	std::vector<ColorClear> m_colorClears;
+	std::vector<DepthClear> m_depthClears;
+	std::vector<WorkItem> m_workItems;
 };
 
 }

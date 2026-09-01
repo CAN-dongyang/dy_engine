@@ -87,6 +87,9 @@ namespace dy::Graphics
 		RHI::IBuffer* m_lightingBuffer = nullptr;
 		RHI::IBuffer* m_shadowMatrixBuffer = nullptr;
 		uint32_t m_shadowDescriptorIndex = 0xFFFFFFFFu;
+		uint32_t m_shadowViewCount = 0u;
+		uint32_t m_shadowAtlasColumns = 1u;
+		uint32_t m_shadowAtlasRows = 1u;
 		bool m_useExplicitShadowPass = false;
 		SkinningExecutionMode m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
 		GpuScene m_gpuScene;

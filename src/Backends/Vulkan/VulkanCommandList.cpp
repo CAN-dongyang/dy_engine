@@ -7,8 +7,6 @@ namespace dy::Backends
 
 void VulkanCommandList::Begin()
 {
-	m_clearColor = { { 0.4f, 0.7f, 1.0f, 1.0f } };
-	m_clearDepth = 1.0f;
 	m_renderTargetCount = 0;
 	m_renderTargets = {};
 	m_depthStencil = nullptr;
@@ -24,6 +22,9 @@ void VulkanCommandList::Begin()
 	m_drawCalls.clear();
 	m_computeDispatches.clear();
 	m_bufferBarriers.clear();
+	m_colorClears.clear();
+	m_depthClears.clear();
+	m_workItems.clear();
 }
 
 void VulkanCommandList::BindGraphicsPipeline(dy::RHI::IPipelineState* pipelineState)
@@ -102,14 +103,16 @@ void VulkanCommandList::SetRenderTargets(uint32_t numRenderTargets, dy::RHI::ITe
 
 void VulkanCommandList::ClearColor(dy::RHI::ITexture* renderTarget, float r, float g, float b, float a)
 {
-	(void)renderTarget;
-	m_clearColor = { { r, g, b, a } };
+	if(renderTarget == nullptr) return;
+	m_colorClears.push_back(ColorClear{ renderTarget, { { r, g, b, a } } });
+	m_workItems.push_back(WorkItem{ WorkType::ClearColor, static_cast<uint32_t>(m_colorClears.size() - 1u) });
 }
 
 void VulkanCommandList::ClearDepth(dy::RHI::ITexture* depthStencil, float depth)
 {
-	(void)depthStencil;
-	m_clearDepth = depth;
+	if(depthStencil == nullptr) return;
+	m_depthClears.push_back(DepthClear{ depthStencil, depth });
+	m_workItems.push_back(WorkItem{ WorkType::ClearDepth, static_cast<uint32_t>(m_depthClears.size() - 1u) });
 }
 
 void VulkanCommandList::SetViewport(const dy::RHI::Viewport& viewport)
@@ -141,8 +144,6 @@ void VulkanCommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCou
 	drawCall.renderTargetCount = m_renderTargetCount;
 	drawCall.renderTargets = m_renderTargets;
 	drawCall.depthStencil = m_depthStencil;
-	drawCall.clearColor = m_clearColor;
-	drawCall.clearDepth = m_clearDepth;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;
 	drawCall.viewport = m_pendingViewport;
@@ -151,6 +152,7 @@ void VulkanCommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCou
 		memcpy(drawCall.pushConstants.data(), m_pendingPushConstants.data(), m_pendingPushConstantSize);
 	}
 	m_drawCalls.push_back(drawCall);
+	m_workItems.push_back(WorkItem{ WorkType::Draw, static_cast<uint32_t>(m_drawCalls.size() - 1u) });
 }
 
 void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
@@ -171,8 +173,6 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 	drawCall.renderTargetCount = m_renderTargetCount;
 	drawCall.renderTargets = m_renderTargets;
 	drawCall.depthStencil = m_depthStencil;
-	drawCall.clearColor = m_clearColor;
-	drawCall.clearDepth = m_clearDepth;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;
 	drawCall.viewport = m_pendingViewport;
@@ -181,6 +181,7 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 		memcpy(drawCall.pushConstants.data(), m_pendingPushConstants.data(), m_pendingPushConstantSize);
 	}
 	m_drawCalls.push_back(drawCall);
+	m_workItems.push_back(WorkItem{ WorkType::Draw, static_cast<uint32_t>(m_drawCalls.size() - 1u) });
 }
 
 void VulkanCommandList::Dispatch(
@@ -203,6 +204,7 @@ void VulkanCommandList::Dispatch(
 			m_pendingPushConstantSize);
 	}
 	m_computeDispatches.push_back(dispatch);
+	m_workItems.push_back(WorkItem{ WorkType::Dispatch, static_cast<uint32_t>(m_computeDispatches.size() - 1u) });
 }
 
 void VulkanCommandList::BufferMemoryBarrier(
@@ -219,6 +221,7 @@ void VulkanCommandList::BufferMemoryBarrier(
 		destinationAccess,
 		offset,
 		size });
+	m_workItems.push_back(WorkItem{ WorkType::BufferBarrier, static_cast<uint32_t>(m_bufferBarriers.size() - 1u) });
 }
 
 }

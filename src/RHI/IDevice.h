@@ -23,6 +23,7 @@ namespace dy::RHI
 		// UNORM = 셰이더 수동 감마, *_SRGB = 하드웨어 감마. 두 백엔드가 같은 값을 쓰므로 색이 일치한다.
 		Format swapchainFormat = Format::R8G8B8A8_UNORM;
 		uint32_t maxFramesInFlight = 2;
+		// 모든 기록 draw의 합계(그림자 뷰, 메인, 후처리 포함).
 		uint32_t maxDrawsPerFrame = 128;
 		uint32_t maxBindlessTextures = 128;
 		uint32_t defaultShadowMapResolution = 2048;
@@ -62,10 +63,11 @@ namespace dy::RHI
 
 		virtual bool UpdateTexture(ITexture* texture, const void* data, uint32_t rowPitch) = 0;
 
-		// (Vulkan: 내부 처리 → false. D3D12: 명시 필요 → true. Phase 3에서 통일 예정.)
+		// Graphics가 그림자 깊이 패스를 명시적으로 기록해야 하는 백엔드.
 		[[nodiscard]] virtual bool RequiresExplicitShadowPass() const { return false; }
 		// (D3D12/Metal: false. Vulkan: true)
 		[[nodiscard]] virtual bool RequiresClipSpaceYFlip() const { return false; }
+		[[nodiscard]] virtual bool SupportsShadowAtlas() const { return false; }
 		// Renderer bindings 13/14 are currently provided by the Vulkan descriptor layout only.
 		[[nodiscard]] virtual bool SupportsSkinningStorageBindings() const { return false; }
 		[[nodiscard]] virtual bool SupportsComputeSkinning() const { return false; }

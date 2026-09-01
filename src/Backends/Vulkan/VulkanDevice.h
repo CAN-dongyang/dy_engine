@@ -35,7 +35,9 @@ public:
 
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer() override;
 	
+	[[nodiscard]] bool RequiresExplicitShadowPass() const override { return true; }
 	[[nodiscard]] bool RequiresClipSpaceYFlip() const override { return true; }
+	[[nodiscard]] bool SupportsShadowAtlas() const override { return true; }
 	[[nodiscard]] bool SupportsSkinningStorageBindings() const override;
 	[[nodiscard]] bool SupportsComputeSkinning() const override;
 	[[nodiscard]] uint32_t GetValidationErrorCount() const;
