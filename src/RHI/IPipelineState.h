@@ -2,7 +2,6 @@
 #include <cstddef>
 #include <cstdint>
 #include "Format.h"
-#include "ShaderLayout.h"
 
 namespace dy::RHI
 {
