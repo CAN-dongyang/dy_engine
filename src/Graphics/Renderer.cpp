@@ -102,6 +102,7 @@ namespace
 		}
 		return bounds;
 	}
+
 }
 
 Renderer::Renderer(RendererBindingMode bindingMode)
@@ -317,6 +318,9 @@ void Renderer::Shutdown(RHI::IDevice* device)
 		m_shadowDepthTarget = nullptr;
 		m_shadowDescriptorIndex = 0xFFFFFFFFu;
 	}
+	m_shadowViewCount = 0u;
+	m_shadowAtlasColumns = 1u;
+	m_shadowAtlasRows = 1u;
 	if(m_shadowMatrixBuffer != nullptr)
 	{
 		device->DestroyBuffer(m_shadowMatrixBuffer);
@@ -371,14 +375,12 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 
 	// 프레임 상수버퍼는 메인 셰이더가 항상 참조한다(lighting=binding1, shadowMatrix=binding3).
 	// 따라서 그림자 비활성이어도 매 프레임 갱신/바인딩한다(그림자 off면 행렬은 Identity).
-	// 그림자 '깊이 패스'는 백엔드가 파이프라인 enableShadowPass 로 내부 처리한다.
 	UpdateShadowBuffer(scene, device);
 	UpdateLightingBuffer(scene, device);
 	context.lightingBuffer = m_lightingBuffer;
 	context.shadowMatrixBuffer = m_shadowMatrixBuffer;
 
-	// 명시적 그림자 패스가 필요한 백엔드(D3D12)면 깊이타겟/PSO 를 컨텍스트에 넣는다.
-	// RenderPath 가 메인 패스 전에 깊이 전용 패스를 기록한다(Vulkan 은 내부 처리하므로 비워둠).
+	// RenderPath가 메인 패스 전에 깊이 전용 그림자 패스를 기록한다.
 	if(m_useExplicitShadowPass)
 	{
 		EnsureShadowDepthTarget(device);
@@ -386,7 +388,10 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 		{
 			context.shadowPipeline = m_shadowPipeline;
 			context.shadowDepth = m_shadowDepthTarget;
-			context.shadowMapResolution = m_config.shadowMap.resolution;
+			context.shadowMapResolution = m_shadowDepthTarget->GetWidth();
+			context.shadowViewCount = m_shadowViewCount;
+			context.shadowAtlasColumns = m_shadowAtlasColumns;
+			context.shadowAtlasRows = m_shadowAtlasRows;
 		}
 	}
 
@@ -442,12 +447,8 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	desc.depthStencilFormat = m_config.depthStencilFormat;
 	desc.depthEnable = m_config.depthStencilFormat != RHI::Format::Unknown;
 	desc.wireframe = false;
-	desc.enableShadowPass = IsShadowEnabled();
 	desc.enableBindlessTextures = m_config.enableBindlessTextures;
 	desc.resourceProfile = resourceProfile;
-	desc.shadowMapResolution = m_config.shadowMap.resolution;
-	desc.shadowVertexShader = m_shadowVertexShaderSource.empty() ? nullptr : m_shadowVertexShaderSource.data();
-	desc.shadowVertexShaderSize = m_shadowVertexShaderSource.size();
 	// desc.shaderLayout = m_config.shaderLayout;
 
 	m_pipeline = device->CreateGraphicsPipeline(desc);
@@ -481,8 +482,7 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 		}
 	}
 
-	// 백엔드가 그림자 깊이 패스를 내부 처리하지 못하면(D3D12) Graphics 가 명시적으로
-	// 깊이 전용 패스를 기록한다. 이를 위해 별도의 깊이 전용 PSO(픽셀 셰이더 없음)를 만든다.
+	// 별도의 깊이 전용 PSO(픽셀 셰이더 없음)를 만들어 Graphics에서 그림자 패스를 기록한다.
 	m_useExplicitShadowPass =
 		IsShadowEnabled() &&
 		device->RequiresExplicitShadowPass() &&
@@ -501,10 +501,9 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 		shadowDesc.renderTargetFormat = RHI::Format::Unknown; // 컬러 출력 없음(깊이 전용)
 		shadowDesc.depthStencilFormat = shadowFormat;
 		shadowDesc.depthEnable = true;
-		shadowDesc.enableShadowPass = false;
 		shadowDesc.enableBindlessTextures = m_config.enableBindlessTextures;
 		shadowDesc.resourceProfile = resourceProfile;
-		shadowDesc.shadowMapResolution = m_config.shadowMap.resolution;
+		shadowDesc.depthBias = 1;
 		shadowDesc.depthBiasSlope = 1.75f; // Vulkan 그림자 파이프라인과 유사한 슬로프 바이어스
 
 		m_shadowPipeline = device->CreateGraphicsPipeline(shadowDesc);
@@ -801,8 +800,7 @@ void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 		shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::Point), 6.0f, 3.0f, 2.0f);
 	}
 	else shadow.shadowInfo = Math::float4(static_cast<float>(ShadowLightType::None), 0.0f, 1.0f, 1.0f);
-	// D3D12의 기존 명시적 shadow pass는 단일 뷰만 기록하므로 첫 행렬은 기존 전체 범위 방식으로 유지한다.
-	if(m_useExplicitShadowPass && IsShadowEnabled())
+	if(m_useExplicitShadowPass && !device->SupportsShadowAtlas() && IsShadowEnabled())
 	{
 		const Math::Bounds3 bounds = m_config.autoFitShadowMap ? ComputeShadowBounds(scene) : Math::Bounds3{};
 		if(shadowSelection.type == ShadowLightType::Directional)
@@ -822,7 +820,15 @@ void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 			if(bounds.valid) direction = Math::NormalizeOr(bounds.Center() - point.position, direction);
 			shadow.lightViewProjectionMatrices[0] = ComputeSpotLightViewProj(point.position, direction, map);
 		}
+		shadow.shadowInfo.y = 1.0f;
+		shadow.shadowInfo.z = 1.0f;
+		shadow.shadowInfo.w = 1.0f;
 	}
+	m_shadowViewCount = std::clamp(static_cast<uint32_t>(std::max(shadow.shadowInfo.y, 0.0f) + 0.5f), 0u, Layout::kMaxShadowViews);
+	m_shadowAtlasColumns = std::clamp(static_cast<uint32_t>(std::max(shadow.shadowInfo.z, 1.0f) + 0.5f), 1u, Layout::kMaxShadowViews);
+	m_shadowAtlasRows = std::clamp(static_cast<uint32_t>(std::max(shadow.shadowInfo.w, 1.0f) + 0.5f), 1u, Layout::kMaxShadowViews);
+	const uint64_t atlasCapacity = static_cast<uint64_t>(m_shadowAtlasColumns) * m_shadowAtlasRows;
+	if(m_shadowViewCount > atlasCapacity) m_shadowViewCount = static_cast<uint32_t>(atlasCapacity);
 	shadow.pcssParams = Math::float4(
 		std::max(m_config.shadowLightRadius, 0.0f),
 		std::max(m_config.shadowBlockerSearchRadius, 0.0f),

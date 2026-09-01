@@ -12,7 +12,9 @@ void VulkanPipeline::Initialize(
 	const dy::RHI::GraphicsPipelineDesc& desc,
 	VkDescriptorSetLayout bindlessDescriptorSetLayout)
 {
-	if (desc.vertexShader == nullptr || desc.vertexShaderSize == 0 || desc.pixelShader == nullptr || desc.pixelShaderSize == 0) {
+	const bool hasColorAttachment = colorAttachmentFormat != VK_FORMAT_UNDEFINED;
+	const bool hasPixelShader = desc.pixelShader != nullptr && desc.pixelShaderSize > 0u;
+	if (desc.vertexShader == nullptr || desc.vertexShaderSize == 0 || (hasColorAttachment && !hasPixelShader)) {
 		throw std::runtime_error("graphics pipeline shader bytecode is missing");
 	}
 
@@ -30,10 +32,13 @@ void VulkanPipeline::Initialize(
 	shaderStages[0].pNext = &vertexShaderInfo;
 	shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
 	shaderStages[0].pName = "main";
-	shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	shaderStages[1].pNext = &pixelShaderInfo;
-	shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	shaderStages[1].pName = "main";
+	if(hasPixelShader)
+	{
+		shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		shaderStages[1].pNext = &pixelShaderInfo;
+		shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		shaderStages[1].pName = "main";
+	}
 
 	// Geometry is pulled from storage buffers by the Vulkan backend shader path.
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
@@ -54,6 +59,10 @@ void VulkanPipeline::Initialize(
 	rasterizer.cullMode = VK_CULL_MODE_NONE;
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.lineWidth = 1.0f;
+	rasterizer.depthBiasEnable = desc.depthBias != 0 || desc.depthBiasSlope != 0.0f || desc.depthBiasClamp != 0.0f;
+	rasterizer.depthBiasConstantFactor = static_cast<float>(desc.depthBias);
+	rasterizer.depthBiasSlopeFactor = desc.depthBiasSlope;
+	rasterizer.depthBiasClamp = desc.depthBiasClamp;
 
 	VkPipelineMultisampleStateCreateInfo multisampling{};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -70,8 +79,8 @@ void VulkanPipeline::Initialize(
 	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	VkPipelineColorBlendStateCreateInfo colorBlending{};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.attachmentCount = hasColorAttachment ? 1u : 0u;
+	colorBlending.pAttachments = hasColorAttachment ? &colorBlendAttachment : nullptr;
 
 	const VkDynamicState dynamicStates[] = {
 		VK_DYNAMIC_STATE_VIEWPORT,
@@ -103,14 +112,14 @@ void VulkanPipeline::Initialize(
 
 	VkPipelineRenderingCreateInfo renderingInfo{};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachmentFormats = &colorAttachmentFormat;
+	renderingInfo.colorAttachmentCount = hasColorAttachment ? 1u : 0u;
+	renderingInfo.pColorAttachmentFormats = hasColorAttachment ? &colorAttachmentFormat : nullptr;
 	renderingInfo.depthAttachmentFormat = depthAttachmentFormat;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = &renderingInfo;
-	pipelineInfo.stageCount = 2;
+	pipelineInfo.stageCount = hasPixelShader ? 2u : 1u;
 	pipelineInfo.pStages = shaderStages;
 	pipelineInfo.pVertexInputState = &vertexInputInfo;
 	pipelineInfo.pInputAssemblyState = &inputAssembly;

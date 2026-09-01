@@ -398,6 +398,28 @@ namespace
 		}
 	}
 
+	void SetShadowView(RHI::ICommandList* commandList, const RenderPathContext& ctx, uint32_t shadowView)
+	{
+		const uint32_t columns = std::max(ctx.shadowAtlasColumns, 1u);
+		const uint32_t rows = std::max(ctx.shadowAtlasRows, 1u);
+		const uint32_t tileWidth = std::max(ctx.shadowMapResolution / columns, 1u);
+		const uint32_t tileHeight = std::max(ctx.shadowMapResolution / rows, 1u);
+		const uint32_t tileX = shadowView % columns;
+		const uint32_t tileY = shadowView / columns;
+		commandList->SetViewport(RHI::Viewport{
+			static_cast<float>(tileX * tileWidth),
+			static_cast<float>(tileY * tileHeight),
+			static_cast<float>(tileWidth),
+			static_cast<float>(tileHeight),
+			0.0f,
+			1.0f });
+		commandList->SetScissor(RHI::Rect{
+			static_cast<int32_t>(tileX * tileWidth),
+			static_cast<int32_t>(tileY * tileHeight),
+			tileWidth,
+			tileHeight });
+	}
+
 	// 메인 포워드 패스 시작: 이미 획득한 커맨드 리스트에 백버퍼/깊이/파이프라인/상수버퍼를 바인딩.
 	// 그림자 깊이타겟이 있으면 SRV 로 바인딩한다(백엔드가 DEPTH_WRITE→PIXEL_SHADER_RESOURCE 전환).
 	[[nodiscard]] bool BeginMainPassOn(RHI::ICommandList* commandList, RHI::ITexture* backBuffer, const RenderPathContext& ctx)
@@ -747,57 +769,61 @@ namespace
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		for(uint32_t shadowView = 0u; shadowView < context.shadowViewCount; ++shadowView)
 		{
-			const EntityID entity = static_cast<EntityID>(entityIndex);
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			if(!renderFlags.castShadow) continue;
-
-			const MeshID meshId = scene.GetEntityMesh(entity);
-			const MaterialID materialId = scene.GetEntityMaterial(entity);
-			if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
-			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshStates.size()) continue;
-			const SceneMeshState& meshState = m_meshStates[meshIndex];
-			if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr || meshState.indexCount == 0u) continue;
-
-			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
-
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-			const bool skinned = m_skinningEnabled && scene.IsEntitySkinned(entity) && meshState.hasSkinInfluences;
-			const bool shaderSkinned = skinned && !IsEntityPreSkinned(entity);
-			if(shaderSkinned) textureFlags |= Layout::kSkinnedFlag;
-			if(m_skinningEnabled)
+			SetShadowView(commandList, context, shadowView);
+			const uint32_t entityCount = scene.GetEntityCount();
+			for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
 			{
-				RHI::IBuffer* influenceBuffer = meshState.hasSkinInfluences
-					? meshState.influenceBuffer
-					: m_fallbackInfluenceBuffer;
-				const uint32_t influenceBytes = meshState.hasSkinInfluences
-					? meshState.influenceBytes
-					: m_fallbackInfluenceBufferBytes;
-				if(influenceBuffer == nullptr || m_activePaletteBuffer == nullptr) continue;
-				commandList->BindStorageBuffer(Layout::kSkinInfluenceStorageBinding, influenceBuffer, 0, influenceBytes);
-				commandList->BindStorageBuffer(Layout::kSkinPaletteStorageBinding, m_activePaletteBuffer, 0, m_activePaletteBufferBytes);
+				const EntityID entity = static_cast<EntityID>(entityIndex);
+				const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
+				if(!renderFlags.castShadow) continue;
+
+				const MeshID meshId = scene.GetEntityMesh(entity);
+				const MaterialID materialId = scene.GetEntityMaterial(entity);
+				if(!IsValid(meshId) || !IsValid(materialId)) continue;
+
+				const uint32_t meshIndex = ToIndex(meshId);
+				if(meshIndex >= m_meshStates.size()) continue;
+				const SceneMeshState& meshState = m_meshStates[meshIndex];
+				if(meshState.vertexBuffer == nullptr || meshState.indexBuffer == nullptr || meshState.indexCount == 0u) continue;
+
+				const uint32_t materialIndex = ToIndex(materialId);
+				if(materialIndex >= materialStates.size()) continue;
+
+				const MaterialDesc& material = scene.GetMaterial(materialId);
+				const SceneMaterialState& materialState = materialStates[materialIndex];
+				const Transform& transform = scene.GetTransform(entity);
+				uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
+				const bool skinned = m_skinningEnabled && scene.IsEntitySkinned(entity) && meshState.hasSkinInfluences;
+				const bool shaderSkinned = skinned && !IsEntityPreSkinned(entity);
+				if(shaderSkinned) textureFlags |= Layout::kSkinnedFlag;
+				if(m_skinningEnabled)
+				{
+					RHI::IBuffer* influenceBuffer = meshState.hasSkinInfluences
+						? meshState.influenceBuffer
+						: m_fallbackInfluenceBuffer;
+					const uint32_t influenceBytes = meshState.hasSkinInfluences
+						? meshState.influenceBytes
+						: m_fallbackInfluenceBufferBytes;
+					if(influenceBuffer == nullptr || m_activePaletteBuffer == nullptr) continue;
+					commandList->BindStorageBuffer(Layout::kSkinInfluenceStorageBinding, influenceBuffer, 0, influenceBytes);
+					commandList->BindStorageBuffer(Layout::kSkinPaletteStorageBinding, m_activePaletteBuffer, 0, m_activePaletteBufferBytes);
+				}
+
+				RHI::GeometryBinding geometry = {};
+				geometry.vertexBuffer = GetEntityVertexBuffer(entity, meshState);
+				geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
+				geometry.indexBuffer = meshState.indexBuffer;
+				geometry.indexFormat = RHI::Format::R32_UINT;
+				commandList->BindGeometry(geometry);
+
+				Layout::DrawConstants drawConstants = MakeDrawConstants(config, material, materialState, transform, textureFlags, 0, 0);
+				drawConstants.emissiveColor.w = static_cast<float>(shadowView);
+				if(shaderSkinned) drawConstants.firstVertex = scene.GetEntitySkinPaletteOffset(entity);
+				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
+				commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
 			}
-
-			RHI::GeometryBinding geometry = {};
-			geometry.vertexBuffer = GetEntityVertexBuffer(entity, meshState);
-			geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-			geometry.indexBuffer = meshState.indexBuffer;
-			geometry.indexFormat = RHI::Format::R32_UINT;
-			commandList->BindGeometry(geometry);
-
-			Layout::DrawConstants drawConstants = MakeDrawConstants(config, material, materialState, transform, textureFlags, 0, 0);
-			if(shaderSkinned) drawConstants.firstVertex = scene.GetEntitySkinPaletteOffset(entity);
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
 		}
 	}
 
@@ -1064,34 +1090,39 @@ namespace
 		geometry.indexFormat = RHI::Format::R32_UINT;
 		commandList->BindGeometry(geometry);
 
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		for(uint32_t shadowView = 0u; shadowView < context.shadowViewCount; ++shadowView)
 		{
-			const EntityID entity = static_cast<EntityID>(entityIndex);
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			if(!renderFlags.castShadow) continue;
+			SetShadowView(commandList, context, shadowView);
+			const uint32_t entityCount = scene.GetEntityCount();
+			for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+			{
+				const EntityID entity = static_cast<EntityID>(entityIndex);
+				const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
+				if(!renderFlags.castShadow) continue;
 
-			const MeshID meshId = scene.GetEntityMesh(entity);
-			const MaterialID materialId = scene.GetEntityMaterial(entity);
-			if(!IsValid(meshId) || !IsValid(materialId)) continue;
+				const MeshID meshId = scene.GetEntityMesh(entity);
+				const MaterialID materialId = scene.GetEntityMaterial(entity);
+				if(!IsValid(meshId) || !IsValid(materialId)) continue;
 
-			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshRanges.size()) continue;
-			const MeshRange& range = m_meshRanges[meshIndex];
-			if(range.indexCount == 0u) continue;
+				const uint32_t meshIndex = ToIndex(meshId);
+				if(meshIndex >= m_meshRanges.size()) continue;
+				const MeshRange& range = m_meshRanges[meshIndex];
+				if(range.indexCount == 0u) continue;
 
-			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
+				const uint32_t materialIndex = ToIndex(materialId);
+				if(materialIndex >= materialStates.size()) continue;
 
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
+				const MaterialDesc& material = scene.GetMaterial(materialId);
+				const SceneMaterialState& materialState = materialStates[materialIndex];
+				const Transform& transform = scene.GetTransform(entity);
+				const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
 
-			Layout::DrawConstants drawConstants = MakeDrawConstants(
-				config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+				Layout::DrawConstants drawConstants = MakeDrawConstants(
+					config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
+				drawConstants.emissiveColor.w = static_cast<float>(shadowView);
+				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
+				commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+			}
 		}
 	}
 
@@ -1216,34 +1247,39 @@ namespace
 		geometry.indexFormat = RHI::Format::R32_UINT;
 		commandList->BindGeometry(geometry);
 
-		const uint32_t entityCount = scene.GetEntityCount();
-		for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+		for(uint32_t shadowView = 0u; shadowView < context.shadowViewCount; ++shadowView)
 		{
-			const EntityID entity = static_cast<EntityID>(entityIndex);
-			const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-			if(!renderFlags.castShadow) continue;
+			SetShadowView(commandList, context, shadowView);
+			const uint32_t entityCount = scene.GetEntityCount();
+			for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
+			{
+				const EntityID entity = static_cast<EntityID>(entityIndex);
+				const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
+				if(!renderFlags.castShadow) continue;
 
-			const MeshID meshId = scene.GetEntityMesh(entity);
-			const MaterialID materialId = scene.GetEntityMaterial(entity);
-			if(!IsValid(meshId) || !IsValid(materialId)) continue;
+				const MeshID meshId = scene.GetEntityMesh(entity);
+				const MaterialID materialId = scene.GetEntityMaterial(entity);
+				if(!IsValid(meshId) || !IsValid(materialId)) continue;
 
-			const uint32_t meshIndex = ToIndex(meshId);
-			if(meshIndex >= m_meshRanges.size()) continue;
-			const MeshRange& range = m_meshRanges[meshIndex];
-			if(range.indexCount == 0u) continue;
+				const uint32_t meshIndex = ToIndex(meshId);
+				if(meshIndex >= m_meshRanges.size()) continue;
+				const MeshRange& range = m_meshRanges[meshIndex];
+				if(range.indexCount == 0u) continue;
 
-			const uint32_t materialIndex = ToIndex(materialId);
-			if(materialIndex >= materialStates.size()) continue;
+				const uint32_t materialIndex = ToIndex(materialId);
+				if(materialIndex >= materialStates.size()) continue;
 
-			const MaterialDesc& material = scene.GetMaterial(materialId);
-			const SceneMaterialState& materialState = materialStates[materialIndex];
-			const Transform& transform = scene.GetTransform(entity);
-			const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
+				const MaterialDesc& material = scene.GetMaterial(materialId);
+				const SceneMaterialState& materialState = materialStates[materialIndex];
+				const Transform& transform = scene.GetTransform(entity);
+				const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
 
-			Layout::DrawConstants drawConstants = MakeDrawConstants(
-				config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-			commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-			commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+				Layout::DrawConstants drawConstants = MakeDrawConstants(
+					config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
+				drawConstants.emissiveColor.w = static_cast<float>(shadowView);
+				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
+				commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
+			}
 		}
 	}
 
