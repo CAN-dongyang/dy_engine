@@ -5,10 +5,13 @@
 namespace dy::Backends
 {
 
-void VulkanCommandList::Begin()
+void VulkanCommandList::Begin(uint32_t maxColorAttachments)
 {
+	m_maxColorAttachments = maxColorAttachments;
 	m_renderTargetCount = 0;
-	m_renderTargets = {};
+	m_renderTargetsValid = true;
+	m_renderTargetOffset = 0u;
+	m_renderTargets.clear();
 	m_depthStencil = nullptr;
 	m_boundPipeline = nullptr;
 	m_boundComputePipeline = nullptr;
@@ -93,11 +96,12 @@ void VulkanCommandList::BindTexture(uint32_t binding, dy::RHI::ITexture* texture
 
 void VulkanCommandList::SetRenderTargets(uint32_t numRenderTargets, dy::RHI::ITexture** renderTargets, dy::RHI::ITexture* depthStencil)
 {
-	m_renderTargetCount = std::min<uint32_t>(numRenderTargets, kDefaultMaxRenderTargets);
-	m_renderTargets = {};
-	for (uint32_t i = 0; i < m_renderTargetCount; ++i) {
-		m_renderTargets[i] = renderTargets != nullptr ? renderTargets[i] : nullptr;
-	}
+	m_renderTargetOffset = m_renderTargets.size();
+	m_renderTargetCount = numRenderTargets;
+	m_renderTargetsValid = numRenderTargets <= m_maxColorAttachments
+		&& (numRenderTargets == 0u || renderTargets != nullptr);
+	if(m_renderTargetsValid && numRenderTargets > 0u)
+		m_renderTargets.insert(m_renderTargets.end(), renderTargets, renderTargets + numRenderTargets);
 	m_depthStencil = depthStencil;
 }
 
@@ -142,7 +146,8 @@ void VulkanCommandList::DrawInstanced(uint32_t vertexCount, uint32_t instanceCou
 	drawCall.storageBuffers = m_pendingStorageBuffers;
 	drawCall.textures = m_pendingTextures;
 	drawCall.renderTargetCount = m_renderTargetCount;
-	drawCall.renderTargets = m_renderTargets;
+	drawCall.renderTargetsValid = m_renderTargetsValid;
+	drawCall.renderTargetOffset = m_renderTargetOffset;
 	drawCall.depthStencil = m_depthStencil;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;
@@ -171,7 +176,8 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 	drawCall.storageBuffers = m_pendingStorageBuffers;
 	drawCall.textures = m_pendingTextures;
 	drawCall.renderTargetCount = m_renderTargetCount;
-	drawCall.renderTargets = m_renderTargets;
+	drawCall.renderTargetsValid = m_renderTargetsValid;
+	drawCall.renderTargetOffset = m_renderTargetOffset;
 	drawCall.depthStencil = m_depthStencil;
 	drawCall.hasViewport = m_hasPendingViewport;
 	drawCall.hasScissor = m_hasPendingScissor;

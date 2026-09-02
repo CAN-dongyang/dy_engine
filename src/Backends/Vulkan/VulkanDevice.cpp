@@ -394,7 +394,14 @@ namespace {
 		{
 			CopyPipelineDesc(desc);
 			m_pipelineCache.reserve(4);
-			if (GetPipelineForFormats(context, colorAttachmentFormat, depthAttachmentFormat, descriptorSetLayout, bindlessDescriptorSetLayout) == nullptr) {
+			const uint32_t colorAttachmentCount = colorAttachmentFormat != VK_FORMAT_UNDEFINED ? 1u : 0u;
+			if (GetPipelineForFormats(
+				context,
+				colorAttachmentCount > 0u ? &colorAttachmentFormat : nullptr,
+				colorAttachmentCount,
+				depthAttachmentFormat,
+				descriptorSetLayout,
+				bindlessDescriptorSetLayout) == nullptr) {
 				throw std::runtime_error("failed to create graphics pipeline");
 			}
 		}
@@ -409,21 +416,38 @@ namespace {
 
 		const VulkanPipeline* GetPipelineForFormats(
 			const VulkanContext& context,
-			VkFormat colorAttachmentFormat,
+			const VkFormat* colorAttachmentFormats,
+			uint32_t colorAttachmentCount,
 			VkFormat depthAttachmentFormat,
 			VkDescriptorSetLayout descriptorSetLayout,
 			VkDescriptorSetLayout bindlessDescriptorSetLayout) const
 		{
+			if(colorAttachmentCount > 0u && colorAttachmentFormats == nullptr) return nullptr;
 			for (const PipelineCacheEntry& entry : m_pipelineCache) {
-				if (entry.colorAttachmentFormat == colorAttachmentFormat &&
-					entry.depthAttachmentFormat == depthAttachmentFormat) return &entry.pipeline;
+				if (entry.colorAttachmentFormats.size() == colorAttachmentCount
+					&& entry.depthAttachmentFormat == depthAttachmentFormat
+					&& (colorAttachmentCount == 0u
+						|| std::equal(
+							entry.colorAttachmentFormats.begin(),
+							entry.colorAttachmentFormats.end(),
+							colorAttachmentFormats))) return &entry.pipeline;
 			}
 
 			try {
 				PipelineCacheEntry entry = {};
-				entry.colorAttachmentFormat = colorAttachmentFormat;
+				if(colorAttachmentCount > 0u)
+					entry.colorAttachmentFormats.assign(
+						colorAttachmentFormats,
+						colorAttachmentFormats + colorAttachmentCount);
 				entry.depthAttachmentFormat = depthAttachmentFormat;
-				entry.pipeline.Initialize(context, colorAttachmentFormat, depthAttachmentFormat, descriptorSetLayout, m_desc, bindlessDescriptorSetLayout);
+				entry.pipeline.Initialize(
+					context,
+					colorAttachmentFormats,
+					colorAttachmentCount,
+					depthAttachmentFormat,
+					descriptorSetLayout,
+					m_desc,
+					bindlessDescriptorSetLayout);
 				m_pipelineCache.push_back(std::move(entry));
 				return &m_pipelineCache.back().pipeline;
 			} catch (const std::exception& e) {
@@ -438,7 +462,7 @@ namespace {
 	private:
 		struct PipelineCacheEntry
 		{
-			VkFormat colorAttachmentFormat = VK_FORMAT_UNDEFINED;
+			std::vector<VkFormat> colorAttachmentFormats;
 			VkFormat depthAttachmentFormat = VK_FORMAT_UNDEFINED;
 			VulkanPipeline pipeline;
 		};
@@ -885,16 +909,20 @@ private:
 	bool RecreateCurrentFrameFenceSignaled();
 	void RecoverAbortedAcquiredFrame(bool recreateFence);
 
+	struct RenderingColorTarget
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VulkanTexture* texture = nullptr;
+		bool isSwapchain = false;
+	};
+
 	struct RenderingTarget
 	{
-		bool hasColor = false;
-		VkImage colorImage = VK_NULL_HANDLE;
-		VkImageView colorView = VK_NULL_HANDLE;
-		VkFormat colorFormat = VK_FORMAT_UNDEFINED;
-		VulkanTexture* colorTexture = nullptr;
+		std::vector<RenderingColorTarget> colors;
+		std::vector<VkFormat> colorFormats;
 		VulkanTexture* depthTexture = nullptr;
 		VkExtent2D extent = {};
-		bool isSwapchain = false;
 	};
 
 	bool RecordCommandBuffer(const VulkanCommandList& commandList);
@@ -903,8 +931,10 @@ private:
 	bool RecordColorClear(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t clearIndex);
 	bool RecordDepthClear(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t clearIndex);
 	bool RecordGraphicsPass(VkCommandBuffer commandBuffer, const VulkanCommandList& commandList, uint32_t firstDraw, uint32_t drawCount);
-	bool ResolveGraphicsTarget(const VulkanCommandList::DrawCall& drawCall, RenderingTarget& target);
-	bool ResolveOffscreenTarget(dy::RHI::ITexture* colorTarget, dy::RHI::ITexture* depthTarget, RenderingTarget& target);
+	bool ResolveGraphicsTarget(
+		const VulkanCommandList& commandList,
+		const VulkanCommandList::DrawCall& drawCall,
+		RenderingTarget& target);
 	bool PushDrawDescriptors(
 		VkCommandBuffer commandBuffer,
 		VkPipelineLayout pipelineLayout,
@@ -969,10 +999,13 @@ private:
 		VkImageLayout originalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	};
 	std::vector<RecordedImageLayout> m_recordedImageLayouts;
+	RenderingTarget m_renderingTargetScratch;
+	std::vector<VkRenderingAttachmentInfo> m_colorAttachmentsScratch;
 
 	uint32_t m_maxFramesInFlight = dy::RHI::DeviceDesc{}.maxFramesInFlight;
 	uint32_t m_maxDrawsPerFrame = dy::RHI::DeviceDesc{}.maxDrawsPerFrame;
 	uint32_t m_maxBindlessTextures = dy::RHI::DeviceDesc{}.maxBindlessTextures;
+	uint32_t m_maxColorAttachments = 0u;
 	uint32_t m_descriptorCapacityPerFrame = 0u;
 	uint64_t m_frameAcquireTimeoutNanoseconds = dy::RHI::DeviceDesc{}.frameAcquireTimeoutNanoseconds;
 	VulkanCapabilities m_capabilities = {};
@@ -1540,7 +1573,7 @@ void VulkanDevice::Impl::BeginFrame() {
 	m_frameSubmitted = false;
 	m_imageAcquired = false;
 	if (m_commandList != nullptr) {
-		m_commandList->Begin();
+		m_commandList->Begin(m_maxColorAttachments);
 	}
 
 	if (m_deviceLost || !m_context.device || m_swapchain.GetHandle() == VK_NULL_HANDLE) return;
@@ -1913,6 +1946,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 	VulkanContext::QueueFamilyIndices bestIndices;
 	VulkanCapabilities bestCapabilities = {};
 	bool bestOptimalRgba8HostImageCopy = false;
+	uint32_t bestMaxColorAttachments = 0u;
 	for (VkPhysicalDevice device : devices) {
 		uint32_t extensionCount = 0u;
 		if(vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr) != VK_SUCCESS) continue;
@@ -2033,6 +2067,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 			bestIndices = indices;
 			bestCapabilities = capabilities;
 			bestOptimalRgba8HostImageCopy = optimalRgba8HostImageCopy;
+			bestMaxColorAttachments = properties.properties.limits.maxColorAttachments;
 		}
 	}
 	if(bestDevice == VK_NULL_HANDLE)
@@ -2044,6 +2079,7 @@ bool VulkanDevice::Impl::PickPhysicalDevice() {
 	m_context.queueIndices = bestIndices;
 	m_capabilities = bestCapabilities;
 	m_optimalRgba8HostImageCopy = bestOptimalRgba8HostImageCopy;
+	m_maxColorAttachments = bestMaxColorAttachments;
 	SDL_Log(
 		"Vulkan RGBA8 Host Image Copy: %s.",
 		m_optimalRgba8HostImageCopy ? "enabled" : "staging fallback");
@@ -2180,9 +2216,19 @@ bool VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandLis
 			const VulkanCommandList::WorkItem& nextWork = commandList.m_workItems[workIndex + drawCount];
 			if(nextWork.type != VulkanCommandList::WorkType::Draw || nextWork.index != firstDraw + drawCount) break;
 			const VulkanCommandList::DrawCall& next = commandList.m_drawCalls[nextWork.index];
-			bool sameTargets = next.renderTargetCount == first.renderTargetCount && next.depthStencil == first.depthStencil;
-			for(uint32_t target = 0u; sameTargets && target < first.renderTargetCount; ++target)
-				sameTargets = next.renderTargets[target] == first.renderTargets[target];
+			bool sameTargets = first.renderTargetsValid
+				&& next.renderTargetsValid
+				&& next.renderTargetCount == first.renderTargetCount
+				&& next.depthStencil == first.depthStencil
+				&& first.renderTargetOffset <= commandList.m_renderTargets.size()
+				&& next.renderTargetOffset <= commandList.m_renderTargets.size()
+				&& first.renderTargetCount <= commandList.m_renderTargets.size() - first.renderTargetOffset
+				&& next.renderTargetCount <= commandList.m_renderTargets.size() - next.renderTargetOffset;
+			for(uint32_t targetIndex = 0u; sameTargets && targetIndex < first.renderTargetCount; ++targetIndex)
+			{
+				sameTargets = commandList.m_renderTargets[first.renderTargetOffset + targetIndex]
+					== commandList.m_renderTargets[next.renderTargetOffset + targetIndex];
+			}
 			if(!sameTargets) break;
 			++drawCount;
 		}
@@ -2192,10 +2238,19 @@ bool VulkanDevice::Impl::RecordCommandBuffer(const VulkanCommandList& commandLis
 	const bool rendersToSwapchain = std::any_of(
 		commandList.m_drawCalls.begin(),
 		commandList.m_drawCalls.end(),
-		[this](const VulkanCommandList::DrawCall& drawCall)
+		[this, &commandList](const VulkanCommandList::DrawCall& drawCall)
 		{
+			if(!drawCall.renderTargetsValid) return false;
 			if(drawCall.renderTargetCount == 0u) return drawCall.depthStencil == nullptr;
-			return drawCall.renderTargets[0] == nullptr || drawCall.renderTargets[0] == m_backBuffer;
+			if(drawCall.renderTargetOffset > commandList.m_renderTargets.size()
+				|| drawCall.renderTargetCount > commandList.m_renderTargets.size() - drawCall.renderTargetOffset) return false;
+			for(uint32_t targetIndex = 0u; targetIndex < drawCall.renderTargetCount; ++targetIndex)
+			{
+				dy::RHI::ITexture* renderTarget =
+					commandList.m_renderTargets[drawCall.renderTargetOffset + targetIndex];
+				if(renderTarget == nullptr || renderTarget == m_backBuffer) return true;
+			}
+			return false;
 		}) || std::any_of(
 		commandList.m_colorClears.begin(),
 		commandList.m_colorClears.end(),
@@ -2443,18 +2498,18 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 	uint32_t drawCount) {
 	if(drawCount == 0u || firstDraw >= commandList.m_drawCalls.size()) return true;
 	const VulkanCommandList::DrawCall& passDraw = commandList.m_drawCalls[firstDraw];
-	RenderingTarget target{};
-	if (!ResolveGraphicsTarget(passDraw, target)) return false;
+	RenderingTarget& target = m_renderingTargetScratch;
+	if (!ResolveGraphicsTarget(commandList, passDraw, target)) return false;
 	const VkExtent2D renderExtent = target.extent;
 
-	if(target.hasColor)
+	for(RenderingColorTarget& color : target.colors)
 	{
-		const VkImageLayout oldColorLayout = target.isSwapchain
+		const VkImageLayout oldColorLayout = color.isSwapchain
 			? m_recordedSwapchainLayout
-			: target.colorTexture->GetImageLayout();
+			: color.texture->GetImageLayout();
 		CmdTransitionImageLayout(
 			commandBuffer,
-			target.colorImage,
+			color.image,
 			VK_IMAGE_ASPECT_COLOR_BIT,
 			oldColorLayout,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -2469,12 +2524,18 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 	}
 
-	VkRenderingAttachmentInfo colorAttachment{};
-	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	colorAttachment.imageView = target.colorView;
-	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	std::vector<VkRenderingAttachmentInfo>& colorAttachments = m_colorAttachmentsScratch;
+	colorAttachments.clear();
+	colorAttachments.resize(target.colors.size());
+	for(size_t colorIndex = 0u; colorIndex < target.colors.size(); ++colorIndex)
+	{
+		VkRenderingAttachmentInfo& attachment = colorAttachments[colorIndex];
+		attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+		attachment.imageView = target.colors[colorIndex].view;
+		attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	}
 	VkRenderingAttachmentInfo depthAttachment{};
 	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
 	depthAttachment.imageView = target.depthTexture != nullptr ? target.depthTexture->GetImageView() : VK_NULL_HANDLE;
@@ -2485,8 +2546,8 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
 	renderingInfo.renderArea.extent = renderExtent;
 	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = target.hasColor ? 1u : 0u;
-	renderingInfo.pColorAttachments = target.hasColor ? &colorAttachment : nullptr;
+	renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+	renderingInfo.pColorAttachments = colorAttachments.empty() ? nullptr : colorAttachments.data();
 	renderingInfo.pDepthAttachment = target.depthTexture != nullptr ? &depthAttachment : nullptr;
 
 	vkCmdBeginRendering(commandBuffer, &renderingInfo);
@@ -2503,7 +2564,8 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 		const bool usesBindlessTextures = pipelineState->UsesBindlessTextures();
 		const VulkanPipeline* pipeline = pipelineState->GetPipelineForFormats(
 			m_context,
-			target.colorFormat,
+			target.colorFormats.empty() ? nullptr : target.colorFormats.data(),
+			static_cast<uint32_t>(target.colorFormats.size()),
 			target.depthTexture != nullptr ? target.depthTexture->GetVkFormat() : VK_FORMAT_UNDEFINED,
 			profileResources->descriptorSetLayout,
 			usesBindlessTextures ? m_bindlessDescriptorSetLayout : VK_NULL_HANDLE);
@@ -2572,25 +2634,25 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 	}
 
 	vkCmdEndRendering(commandBuffer);
-	if(target.hasColor)
+	for(RenderingColorTarget& color : target.colors)
 	{
-		const VkImageLayout finalColorLayout = target.isSwapchain
+		const VkImageLayout finalColorLayout = color.isSwapchain
 			? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-			: HasTextureUsage(target.colorTexture->GetUsage(), dy::RHI::TextureUsage::ShaderResource)
+			: HasTextureUsage(color.texture->GetUsage(), dy::RHI::TextureUsage::ShaderResource)
 				? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 				: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		CmdTransitionImageLayout(
 			commandBuffer,
-			target.colorImage,
+			color.image,
 			VK_IMAGE_ASPECT_COLOR_BIT,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			finalColorLayout);
-		if(target.isSwapchain) m_recordedSwapchainLayout = finalColorLayout;
-		else if(target.colorTexture != nullptr) SetRecordedImageLayout(target.colorTexture, finalColorLayout);
+		if(color.isSwapchain) m_recordedSwapchainLayout = finalColorLayout;
+		else SetRecordedImageLayout(color.texture, finalColorLayout);
 	}
 	if(target.depthTexture != nullptr)
 	{
-		const VkImageLayout finalDepthLayout = !target.hasColor
+		const VkImageLayout finalDepthLayout = target.colors.empty()
 			&& HasTextureUsage(target.depthTexture->GetUsage(), dy::RHI::TextureUsage::ShaderResource)
 			? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -2608,90 +2670,122 @@ bool VulkanDevice::Impl::RecordGraphicsPass(
 	return true;
 }
 
-bool VulkanDevice::Impl::ResolveGraphicsTarget(const VulkanCommandList::DrawCall& drawCall, RenderingTarget& target) {
-	if (drawCall.renderTargetCount > 1) {
-		SDL_Log("Vulkan graphics pass currently supports one color render target.");
+bool VulkanDevice::Impl::ResolveGraphicsTarget(
+	const VulkanCommandList& commandList,
+	const VulkanCommandList::DrawCall& drawCall,
+	RenderingTarget& target)
+{
+	target.colors.clear();
+	target.colorFormats.clear();
+	target.depthTexture = nullptr;
+	target.extent = {};
+	if(drawCall.renderTargetCount > m_maxColorAttachments)
+	{
+		SDL_Log("Vulkan color render-target count exceeds the selected device limit.");
 		return false;
 	}
-	if(drawCall.renderTargetCount == 0u && drawCall.depthStencil != nullptr)
+	if(!drawCall.renderTargetsValid)
 	{
-		VulkanTexture* depthTexture = dynamic_cast<VulkanTexture*>(drawCall.depthStencil);
-		if(depthTexture == nullptr || depthTexture->GetImageView() == VK_NULL_HANDLE)
-		{
-			SDL_Log("Vulkan depth-only target is not a valid Vulkan texture.");
-			return false;
-		}
+		SDL_Log("Vulkan color render-target array is invalid.");
+		return false;
+	}
+	if(drawCall.renderTargetOffset > commandList.m_renderTargets.size()
+		|| drawCall.renderTargetCount > commandList.m_renderTargets.size() - drawCall.renderTargetOffset)
+	{
+		SDL_Log("Vulkan color render-target array is invalid.");
+		return false;
+	}
+
+	VulkanTexture* depthTexture = dynamic_cast<VulkanTexture*>(drawCall.depthStencil);
+	if(drawCall.depthStencil != nullptr
+		&& (depthTexture == nullptr
+			|| depthTexture->GetImageView() == VK_NULL_HANDLE
+			|| !HasTextureUsage(depthTexture->GetUsage(), dy::RHI::TextureUsage::DepthStencil)))
+	{
+		SDL_Log("Vulkan depth target is not a valid depth-stencil texture.");
+		return false;
+	}
+
+	if(drawCall.renderTargetCount == 0u && depthTexture != nullptr)
+	{
 		target.depthTexture = depthTexture;
 		target.extent = { depthTexture->GetWidth(), depthTexture->GetHeight() };
 		return true;
 	}
 
-	dy::RHI::ITexture* colorTarget = m_backBuffer;
-	if (drawCall.renderTargetCount == 1 && drawCall.renderTargets[0] != nullptr) {
-		colorTarget = drawCall.renderTargets[0];
-	}
-
-	if (colorTarget == nullptr || colorTarget == m_backBuffer) {
-		VulkanTexture* depthTexture = dynamic_cast<VulkanTexture*>(drawCall.depthStencil);
-		if (drawCall.depthStencil != nullptr
-			&& (depthTexture == nullptr || depthTexture->GetImageView() == VK_NULL_HANDLE)) {
-			SDL_Log("Vulkan swapchain pass depth target is not a valid Vulkan texture.");
+	const uint32_t colorTargetCount = drawCall.renderTargetCount == 0u
+		? 1u
+		: drawCall.renderTargetCount;
+	target.colors.reserve(colorTargetCount);
+	target.colorFormats.reserve(colorTargetCount);
+	for(uint32_t colorIndex = 0u; colorIndex < colorTargetCount; ++colorIndex)
+	{
+		dy::RHI::ITexture* requestedTarget = drawCall.renderTargetCount == 0u
+			? m_backBuffer
+			: commandList.m_renderTargets[drawCall.renderTargetOffset + colorIndex];
+		if(requestedTarget == nullptr && drawCall.renderTargetCount > 1u)
+		{
+			SDL_Log("Vulkan MRT color targets must not contain null entries.");
 			return false;
 		}
 
-		const VkExtent2D extent = m_swapchain.GetExtent();
-		if (depthTexture != nullptr
-			&& (depthTexture->GetWidth() != extent.width || depthTexture->GetHeight() != extent.height)) {
-			SDL_Log("Vulkan swapchain color/depth target sizes do not match.");
-			return false;
+		RenderingColorTarget color{};
+		VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+		VkExtent2D colorExtent{};
+		if(requestedTarget == nullptr || requestedTarget == m_backBuffer)
+		{
+			const auto& images = m_swapchain.GetImages();
+			const auto& views = m_swapchain.GetImageViews();
+			if(m_currentImageIndex >= images.size() || m_currentImageIndex >= views.size()) return false;
+			color.image = images[m_currentImageIndex];
+			color.view = views[m_currentImageIndex];
+			color.isSwapchain = true;
+			colorFormat = m_swapchain.GetImageFormat();
+			colorExtent = m_swapchain.GetExtent();
+		}
+		else
+		{
+			VulkanTexture* texture = dynamic_cast<VulkanTexture*>(requestedTarget);
+			if(texture == nullptr
+				|| texture->GetImageView() == VK_NULL_HANDLE
+				|| !HasTextureUsage(texture->GetUsage(), dy::RHI::TextureUsage::RenderTarget))
+			{
+				SDL_Log("Vulkan color target is not a valid render-target texture.");
+				return false;
+			}
+			color.image = texture->GetImage();
+			color.view = texture->GetImageView();
+			color.texture = texture;
+			colorFormat = texture->GetVkFormat();
+			colorExtent = { texture->GetWidth(), texture->GetHeight() };
 		}
 
-		const auto& images = m_swapchain.GetImages();
-		const auto& views = m_swapchain.GetImageViews();
-		if (m_currentImageIndex >= images.size() || m_currentImageIndex >= views.size()) return false;
-
-		target.colorImage = images[m_currentImageIndex];
-		target.colorView = views[m_currentImageIndex];
-		target.colorFormat = m_swapchain.GetImageFormat();
-		target.depthTexture = depthTexture;
-		target.extent = extent;
-		target.hasColor = true;
-		target.isSwapchain = true;
-		return true;
+		if(std::any_of(
+			target.colors.begin(),
+			target.colors.end(),
+			[&color](const RenderingColorTarget& existing) { return existing.image == color.image; }))
+		{
+			SDL_Log("Vulkan MRT color targets must reference distinct images.");
+			return false;
+		}
+		if(!target.colors.empty()
+			&& (target.extent.width != colorExtent.width || target.extent.height != colorExtent.height))
+		{
+			SDL_Log("Vulkan MRT color target sizes do not match.");
+			return false;
+		}
+		if(target.colors.empty()) target.extent = colorExtent;
+		target.colors.push_back(color);
+		target.colorFormats.push_back(colorFormat);
 	}
 
-	return ResolveOffscreenTarget(colorTarget, drawCall.depthStencil, target);
-}
-
-bool VulkanDevice::Impl::ResolveOffscreenTarget(
-	dy::RHI::ITexture* colorTarget,
-	dy::RHI::ITexture* depthTarget,
-	RenderingTarget& target)
-{
-	VulkanTexture* colorTexture = dynamic_cast<VulkanTexture*>(colorTarget);
-	if (colorTexture == nullptr || colorTexture->GetImageView() == VK_NULL_HANDLE) {
-		SDL_Log("Vulkan offscreen color target is not a valid Vulkan texture.");
+	if(depthTexture != nullptr
+		&& (depthTexture->GetWidth() != target.extent.width || depthTexture->GetHeight() != target.extent.height))
+	{
+		SDL_Log("Vulkan color/depth target sizes do not match.");
 		return false;
 	}
-
-	VulkanTexture* depthTexture = dynamic_cast<VulkanTexture*>(depthTarget);
-	if (depthTarget != nullptr && (depthTexture == nullptr || depthTexture->GetImageView() == VK_NULL_HANDLE)) {
-		SDL_Log("Vulkan offscreen depth target is not a valid Vulkan texture.");
-		return false;
-	}
-	if (depthTexture != nullptr
-		&& (depthTexture->GetWidth() != colorTexture->GetWidth() || depthTexture->GetHeight() != colorTexture->GetHeight())) {
-		SDL_Log("Vulkan offscreen color/depth target sizes do not match.");
-		return false;
-	}
-
-	target.colorImage = colorTexture->GetImage();
-	target.colorView = colorTexture->GetImageView();
-	target.colorFormat = colorTexture->GetVkFormat();
-	target.colorTexture = colorTexture;
 	target.depthTexture = depthTexture;
-	target.extent = { colorTexture->GetWidth(), colorTexture->GetHeight() };
-	target.hasColor = true;
 	return true;
 }
 

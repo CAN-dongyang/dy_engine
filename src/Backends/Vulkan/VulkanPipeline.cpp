@@ -1,20 +1,23 @@
 #include "VulkanPipeline.h"
 #include <stdexcept>
+#include <vector>
 
 namespace dy::Backends
 {
 
 void VulkanPipeline::Initialize(
 	const VulkanContext& context,
-	VkFormat colorAttachmentFormat,
+	const VkFormat* colorAttachmentFormats,
+	uint32_t colorAttachmentCount,
 	VkFormat depthAttachmentFormat,
 	VkDescriptorSetLayout descriptorSetLayout,
 	const dy::RHI::GraphicsPipelineDesc& desc,
 	VkDescriptorSetLayout bindlessDescriptorSetLayout)
 {
-	const bool hasColorAttachment = colorAttachmentFormat != VK_FORMAT_UNDEFINED;
+	const bool hasColorAttachment = colorAttachmentCount > 0u;
 	const bool hasPixelShader = desc.pixelShader != nullptr && desc.pixelShaderSize > 0u;
-	if (desc.vertexShader == nullptr || desc.vertexShaderSize == 0 || (hasColorAttachment && !hasPixelShader)) {
+	if (desc.vertexShader == nullptr || desc.vertexShaderSize == 0
+		|| (hasColorAttachment && (colorAttachmentFormats == nullptr || !hasPixelShader))) {
 		throw std::runtime_error("graphics pipeline shader bytecode is missing");
 	}
 
@@ -77,10 +80,13 @@ void VulkanPipeline::Initialize(
 	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
 	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	const std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(
+		colorAttachmentCount,
+		colorBlendAttachment);
 	VkPipelineColorBlendStateCreateInfo colorBlending{};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.attachmentCount = hasColorAttachment ? 1u : 0u;
-	colorBlending.pAttachments = hasColorAttachment ? &colorBlendAttachment : nullptr;
+	colorBlending.attachmentCount = colorAttachmentCount;
+	colorBlending.pAttachments = hasColorAttachment ? colorBlendAttachments.data() : nullptr;
 
 	const VkDynamicState dynamicStates[] = {
 		VK_DYNAMIC_STATE_VIEWPORT,
@@ -112,8 +118,8 @@ void VulkanPipeline::Initialize(
 
 	VkPipelineRenderingCreateInfo renderingInfo{};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-	renderingInfo.colorAttachmentCount = hasColorAttachment ? 1u : 0u;
-	renderingInfo.pColorAttachmentFormats = hasColorAttachment ? &colorAttachmentFormat : nullptr;
+	renderingInfo.colorAttachmentCount = colorAttachmentCount;
+	renderingInfo.pColorAttachmentFormats = colorAttachmentFormats;
 	renderingInfo.depthAttachmentFormat = depthAttachmentFormat;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};

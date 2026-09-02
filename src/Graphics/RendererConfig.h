@@ -4,7 +4,6 @@
 #include "Math/Math.h"
 #include "RHI/Format.h"
 #include "RHI/IPipelineState.h"
-#include "RHI/ShaderLayout.h"
 #include "Graphics/Mesh.h"
 #include "Graphics/ShadowMath.h" // ShadowMapDesc
 
@@ -103,8 +102,5 @@ namespace dy::Graphics
 		float shadowLightRadius = 0.05f;
 		float shadowBlockerSearchRadius = 2.0f;
 		float shadowMaxFilterRadius = 8.0f;
-
-		// 셰이더 바인딩 ABI(데이터). 미지정 시 엔진 표준 계약. 사용자 셰이더 제공 시 함께 지정.
-		RHI::ShaderLayoutDesc shaderLayout = {};
 	};
 }

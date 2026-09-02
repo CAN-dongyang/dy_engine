@@ -23,29 +23,17 @@ namespace dy::Graphics
 {
 	class Scene;
 
-	class ISceneRenderer
-	{
-	public:
-		virtual ~ISceneRenderer() = default;
-
-		virtual bool Initialize(RHI::IDevice* device, const RendererDesc& desc = {}) = 0;
-		virtual void Shutdown(RHI::IDevice* device) = 0;
-		virtual void Render(const Scene& scene, RHI::IDevice* device) = 0;
-	};
-
 	// 단일 Renderer. 바인딩 전략은 IRenderPath 로 위임하고, 공유 리소스와
 	// 렌더 패스 플랜만 직접 소유한다(전략별 코드는 RenderPath.cpp).
-	class Renderer : public ISceneRenderer
+	class Renderer
 	{
 	public:
 		Renderer() = default;
-		explicit Renderer(RendererBindingMode bindingMode);
-		explicit Renderer(const RendererDesc& desc);
 		~Renderer() = default;
 
-		bool Initialize(RHI::IDevice* device, const RendererDesc& desc = {}) override;
-		void Shutdown(RHI::IDevice* device) override;
-		void Render(const Scene& scene, RHI::IDevice* device) override;
+		bool Initialize(RHI::IDevice* device, const RendererDesc& desc = {});
+		void Shutdown(RHI::IDevice* device);
+		void Render(const Scene& scene, RHI::IDevice* device);
 		
 		void SetCamera(const CameraDesc& camera); // 고수준 카메라 설정: view·proj·cameraPosition 생성 + 백엔드 Y 뒤집기 처리.
 		void SetViewProjection(const Math::float4x4& viewProjection); // 저수준(deep) 우회: 행렬/위치를 직접 지정.
@@ -86,7 +74,6 @@ namespace dy::Graphics
 		RHI::ITexture* m_shadowDepthTarget = nullptr;
 		RHI::IBuffer* m_lightingBuffer = nullptr;
 		RHI::IBuffer* m_shadowMatrixBuffer = nullptr;
-		uint32_t m_shadowDescriptorIndex = 0xFFFFFFFFu;
 		uint32_t m_shadowViewCount = 0u;
 		uint32_t m_shadowAtlasColumns = 1u;
 		uint32_t m_shadowAtlasRows = 1u;
@@ -95,8 +82,6 @@ namespace dy::Graphics
 		GpuScene m_gpuScene;
 		std::vector<SceneMaterialState> m_materialStates;
 		std::unique_ptr<IRenderPath> m_path;
-		RendererBindingMode m_initialBindingMode = RendererBindingMode::PerDrawBind;
-		bool m_hasInitialConfig = false;
 		bool m_clipYFlip = false; // 백엔드 클립공간 Y 뒤집기 필요 여부(Initialize 에서 device 질의)
 	};
 }

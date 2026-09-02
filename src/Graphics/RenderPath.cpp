@@ -1036,10 +1036,11 @@ namespace
 		m_computeSkinningEnabled = false;
 	}
 
-	// ===== ??Batched bind =============================================================
-	class BatchedBindPath final : public IRenderPath
+	// ===== Batched geometry ============================================================
+	class BatchedGeometryPath final : public IRenderPath
 	{
 	public:
+		explicit BatchedGeometryPath(RendererBindingMode bindingMode) : m_bindingMode(bindingMode) {}
 		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void Shutdown(RHI::IDevice* device) override;
@@ -1056,15 +1057,18 @@ namespace
 		std::vector<MeshRange> m_meshRanges;
 		std::vector<DrawBatch> m_drawBatches;
 		std::vector<InstanceTransform> m_instances;
+		RendererBindingMode m_bindingMode;
 		bool m_warnedSkinnedModels = false;
 		uint64_t m_geometryRevision = 0u;
 	};
 
-	void BatchedBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
+	void BatchedGeometryPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
 		if(!m_warnedSkinnedModels && SceneHasSkinnedEntity(scene))
 		{
-			std::cerr << "BatchedBind render path does not support skinned models; rendering bind pose" << std::endl;
+			std::cerr
+				<< (m_bindingMode == RendererBindingMode::Bindless ? "Bindless" : "BatchedBind")
+				<< " render path does not support skinned models; rendering bind pose" << std::endl;
 			m_warnedSkinnedModels = true;
 		}
 		if(device == nullptr) return;
@@ -1076,7 +1080,7 @@ namespace
 		}
 	}
 
-	void BatchedBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
+	void BatchedGeometryPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
 		BeginShadowPass(commandList, context);
 
@@ -1126,7 +1130,7 @@ namespace
 		}
 	}
 
-	void BatchedBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
+	void BatchedGeometryPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
 		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
 
@@ -1180,159 +1184,7 @@ namespace
 		if(!context.deferSubmit) SubmitMainPass(device, commandList);
 	}
 
-	void BatchedBindPath::Shutdown(RHI::IDevice* device)
-	{
-		if(device == nullptr) return;
-		DestroyBuffer(device, m_vertexBuffer, m_vertexBufferBytes);
-		DestroyBuffer(device, m_indexBuffer, m_indexBufferBytes);
-		DestroyBufferRing(device, m_instanceBuffers, m_instanceBufferBytes);
-		m_meshRanges.clear();
-		m_drawBatches.clear();
-		m_instances.clear();
-		m_geometryRevision = 0u;
-	}
-
-	// ===== Batched-geometry bindless ==================================================
-	class BindlessPath final : public IRenderPath
-	{
-	public:
-		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
-		void Shutdown(RHI::IDevice* device) override;
-
-	private:
-		void RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context);
-
-		RHI::IBuffer* m_vertexBuffer = nullptr;
-		RHI::IBuffer* m_indexBuffer = nullptr;
-		uint32_t m_vertexBufferBytes = 0;
-		uint32_t m_indexBufferBytes = 0;
-		std::vector<RHI::IBuffer*> m_instanceBuffers;
-		std::vector<uint32_t> m_instanceBufferBytes;
-		std::vector<MeshRange> m_meshRanges;
-		std::vector<DrawBatch> m_drawBatches;
-		std::vector<InstanceTransform> m_instances;
-		bool m_warnedSkinnedModels = false;
-		uint64_t m_geometryRevision = 0u;
-	};
-
-	void BindlessPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
-	{
-		(void)context;
-		if(!m_warnedSkinnedModels && SceneHasSkinnedEntity(scene))
-		{
-			std::cerr << "Bindless render path does not support skinned models; rendering bind pose" << std::endl;
-			m_warnedSkinnedModels = true;
-		}
-		if(device == nullptr) return;
-		const uint64_t geometryRevision = scene.GetMeshCollectionRevision();
-		if(m_geometryRevision != geometryRevision
-			&& BuildBatchedGeometry(scene, device, m_vertexBuffer, m_vertexBufferBytes, m_indexBuffer, m_indexBufferBytes, m_meshRanges))
-		{
-			m_geometryRevision = geometryRevision;
-		}
-	}
-
-	void BindlessPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
-	{
-		BeginShadowPass(commandList, context);
-
-		const RendererDesc& config = *context.config;
-		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
-
-		for(uint32_t shadowView = 0u; shadowView < context.shadowViewCount; ++shadowView)
-		{
-			SetShadowView(commandList, context, shadowView);
-			const uint32_t entityCount = scene.GetEntityCount();
-			for(uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex)
-			{
-				const EntityID entity = static_cast<EntityID>(entityIndex);
-				const RenderFlags& renderFlags = scene.GetRenderFlags(entity);
-				if(!renderFlags.castShadow) continue;
-
-				const MeshID meshId = scene.GetEntityMesh(entity);
-				const MaterialID materialId = scene.GetEntityMaterial(entity);
-				if(!IsValid(meshId) || !IsValid(materialId)) continue;
-
-				const uint32_t meshIndex = ToIndex(meshId);
-				if(meshIndex >= m_meshRanges.size()) continue;
-				const MeshRange& range = m_meshRanges[meshIndex];
-				if(range.indexCount == 0u) continue;
-
-				const uint32_t materialIndex = ToIndex(materialId);
-				if(materialIndex >= materialStates.size()) continue;
-
-				const MaterialDesc& material = scene.GetMaterial(materialId);
-				const SceneMaterialState& materialState = materialStates[materialIndex];
-				const Transform& transform = scene.GetTransform(entity);
-				const uint32_t textureFlags = ComputeTextureFlags(materialState, renderFlags);
-
-				Layout::DrawConstants drawConstants = MakeDrawConstants(
-					config, material, materialState, transform, textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-				drawConstants.emissiveColor.w = static_cast<float>(shadowView);
-				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-				commandList->DrawIndexedInstanced(range.indexCount, 1, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
-			}
-		}
-	}
-
-	void BindlessPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
-	{
-		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
-
-		RHI::ICommandList* commandList = device->AcquireCommandList();
-		RHI::ITexture* backBuffer = context.mainColorTarget != nullptr ? context.mainColorTarget : device->GetBackBuffer();
-		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
-
-		if(ShouldRecordShadow(context))
-		{
-			RecordShadowDraws(commandList, scene, context);
-		}
-
-		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
-
-		RHI::GeometryBinding geometry = {};
-		geometry.vertexBuffer = m_vertexBuffer;
-		geometry.vertexStride = static_cast<uint32_t>(sizeof(RendererVertex));
-		geometry.indexBuffer = m_indexBuffer;
-		geometry.indexFormat = RHI::Format::R32_UINT;
-		commandList->BindGeometry(geometry);
-
-		BuildMainDrawBatches(scene, context, m_meshRanges, m_drawBatches, m_instances);
-		RHI::IBuffer* activeInstanceBuffer = nullptr;
-		uint32_t activeInstanceBufferBytes = 0u;
-		if(UploadInstanceTransforms(device, m_instanceBuffers, m_instanceBufferBytes, m_instances, activeInstanceBuffer, activeInstanceBufferBytes))
-		{
-			commandList->BindStorageBuffer(Layout::kBindlessTransformStorageBinding, activeInstanceBuffer, 0, activeInstanceBufferBytes);
-			const RendererDesc& config = *context.config;
-			const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
-			for(const DrawBatch& batch : m_drawBatches)
-			{
-				if(batch.meshIndex >= m_meshRanges.size() || batch.materialIndex >= materialStates.size()) continue;
-				const MeshRange& range = m_meshRanges[batch.meshIndex];
-				if(range.indexCount == 0u || batch.instanceCount == 0u) continue;
-
-				const MaterialDesc& material = scene.GetMaterial(static_cast<MaterialID>(batch.materialIndex));
-				const SceneMaterialState& materialState = materialStates[batch.materialIndex];
-				Layout::DrawConstants drawConstants = MakeDrawConstants(
-					config, material, materialState, Transform{}, batch.textureFlags, range.firstIndex, static_cast<int32_t>(range.firstVertex));
-				drawConstants.firstVertex = batch.firstInstance + 1u;
-				commandList->SetInlineConstants(sizeof(Layout::DrawConstants), &drawConstants);
-				commandList->DrawIndexedInstanced(range.indexCount, batch.instanceCount, range.firstIndex, static_cast<int32_t>(range.firstVertex), 0);
-			}
-		}
-
-		if(!context.deferSubmit) SubmitMainPass(device, commandList);
-	}
-
-	void BindlessPath::Shutdown(RHI::IDevice* device)
+	void BatchedGeometryPath::Shutdown(RHI::IDevice* device)
 	{
 		if(device == nullptr) return;
 		DestroyBuffer(device, m_vertexBuffer, m_vertexBufferBytes);
@@ -1352,9 +1204,8 @@ namespace dy::Graphics
 		switch(bindingMode)
 		{
 		case RendererBindingMode::Bindless:
-			return std::make_unique<BindlessPath>();
 		case RendererBindingMode::BatchedBind:
-			return std::make_unique<BatchedBindPath>();
+			return std::make_unique<BatchedGeometryPath>(bindingMode);
 		case RendererBindingMode::PerDrawBind:
 		default:
 			return std::make_unique<PerDrawBindPath>();

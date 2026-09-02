@@ -9,7 +9,8 @@ class VulkanPipeline {
 public:
     void Initialize(
         const VulkanContext& context,
-        VkFormat colorAttachmentFormat,
+        const VkFormat* colorAttachmentFormats,
+        uint32_t colorAttachmentCount,
         VkFormat depthAttachmentFormat,
         VkDescriptorSetLayout descriptorSetLayout,
         const dy::RHI::GraphicsPipelineDesc& desc,

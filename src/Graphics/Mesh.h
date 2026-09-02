@@ -208,17 +208,6 @@ namespace dy::Graphics
 		bool hasBounds = false;
 	};
 
-	// 그림자/광원 시점 수학(ShadowDesc, ShadowMapDesc, Compute*LightViewProj, Fit*, BuildShadowMesh)은
-	// Graphics/ShadowMath.h 로 분리됨(메시와 별개 관심사).
-
-	class ModelLoader
-	{
-	public:
-		static bool Load(const std::string& path, ModelData& outModel, const ModelLoadOptions& options = {});
-		static bool LoadMesh(const std::string& path, MeshData& outMesh, ModelMaterialInfo* outMaterial = nullptr, const ModelLoadOptions& options = {});
-		static bool LoadMesh(const std::string& path, MeshData& outMesh, std::string* outBaseColorTexturePath, const ModelLoadOptions& options = {});
-	};
-
 	[[nodiscard]] bool LoadModel(const std::string& path, ModelData& outModel, const ModelLoadOptions& options = {});
 	[[nodiscard]] ModelLoadResult LoadModelDetailed(
 		const std::string& path,

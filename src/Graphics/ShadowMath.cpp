@@ -3,66 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <vector>
 
 namespace dy::Graphics
 {
 	namespace
 	{
-		[[nodiscard]] Math::float3 ProjectPointToPlane(const Math::float3& worldPoint, const ShadowDesc& desc)
-		{
-			const Math::float3 castDirection(-desc.lightDirection.x, -desc.lightDirection.y, -desc.lightDirection.z);
-			const float denom = std::abs(castDirection.z) < 0.001f ? -0.001f : castDirection.z;
-			const float t = std::max((desc.receiverPlaneZ - worldPoint.z) / denom, 0.0f);
-			return Math::float3(
-				worldPoint.x + castDirection.x * t,
-				worldPoint.y + castDirection.y * t,
-				desc.receiverPlaneZ + desc.bias);
-		}
-
-		[[nodiscard]] float Cross2D(const Math::float3& origin, const Math::float3& a, const Math::float3& b)
-		{
-			return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
-		}
-
-		[[nodiscard]] std::vector<Math::float3> BuildConvexHull(std::vector<Math::float3> points)
-		{
-			std::sort(points.begin(), points.end(), [](const Math::float3& lhs, const Math::float3& rhs) {
-				if(lhs.x != rhs.x) return lhs.x < rhs.x;
-				return lhs.y < rhs.y;
-			});
-
-			points.erase(std::unique(points.begin(), points.end(), [](const Math::float3& lhs, const Math::float3& rhs) {
-				return std::abs(lhs.x - rhs.x) < 0.0001f && std::abs(lhs.y - rhs.y) < 0.0001f;
-			}), points.end());
-
-			if(points.size() < 3) return {};
-
-			std::vector<Math::float3> hull;
-			hull.reserve(points.size() * 2u);
-			for(const Math::float3& point : points)
-			{
-				while(hull.size() >= 2 && Cross2D(hull[hull.size() - 2u], hull.back(), point) <= 0.0f)
-				{
-					hull.pop_back();
-				}
-				hull.push_back(point);
-			}
-
-			const std::size_t lowerSize = hull.size();
-			for(auto it = points.rbegin() + 1; it != points.rend(); ++it)
-			{
-				while(hull.size() > lowerSize && Cross2D(hull[hull.size() - 2u], hull.back(), *it) <= 0.0f)
-				{
-					hull.pop_back();
-				}
-				hull.push_back(*it);
-			}
-
-			if(!hull.empty()) hull.pop_back();
-			return hull.size() < 3 ? std::vector<Math::float3>{} : hull;
-		}
-
 		[[nodiscard]] Math::float3 SelectUpVector(const Math::float3& lightForward)
 		{
 			// LookAt에서 forward와 up이 평행하면 right 벡터가 0 → 행렬 깨짐.
@@ -307,36 +252,4 @@ namespace dy::Graphics
 		return desc;
 	}
 
-	MeshData BuildShadowMesh(const MeshData& sourceMesh, const Math::float4x4& worldMatrix, const ShadowDesc& desc)
-	{
-		std::vector<Math::float3> projectedPoints;
-		projectedPoints.reserve(sourceMesh.vertices.size());
-		for(const Vertex& vertex : sourceMesh.vertices)
-		{
-			projectedPoints.push_back(ProjectPointToPlane(Math::TransformPoint(worldMatrix, vertex.position), desc));
-		}
-
-		const std::vector<Math::float3> hull = BuildConvexHull(projectedPoints);
-		MeshData shadowMesh = {};
-		if(hull.size() < 3) return shadowMesh;
-
-		shadowMesh.vertices.reserve(hull.size());
-		for(const Math::float3& point : hull)
-		{
-			Vertex vertex = {};
-			vertex.position = point;
-			vertex.normal = Math::float3(0.0f, 0.0f, 1.0f);
-			vertex.uv = Math::float2(point.x, point.y);
-			shadowMesh.vertices.push_back(vertex);
-		}
-
-		shadowMesh.indices.reserve((hull.size() - 2u) * 3u);
-		for(uint32_t i = 1; i + 1u < static_cast<uint32_t>(hull.size()); ++i)
-		{
-			shadowMesh.indices.push_back(0u);
-			shadowMesh.indices.push_back(i);
-			shadowMesh.indices.push_back(i + 1u);
-		}
-		return shadowMesh;
-	}
 }
