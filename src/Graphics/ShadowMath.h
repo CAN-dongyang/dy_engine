@@ -13,14 +13,6 @@ namespace dy::Graphics
 	inline constexpr uint32_t kMaxShadowCascades = 4u;
 	inline constexpr uint32_t kMaxShadowViews = 6u;
 
-	// 평면 투영 그림자(레거시) 파라미터.
-	struct ShadowDesc
-	{
-		Math::float3 lightDirection = Math::float3(0.0f, 0.0f, 1.0f);
-		float receiverPlaneZ = 0.0f;
-		float bias = 0.001f;
-	};
-
 	// 그림자 맵(광원 시점 카메라) 파라미터.
 	struct ShadowMapDesc
 	{
@@ -86,6 +78,4 @@ namespace dy::Graphics
 		const Math::float3& boundsMin,
 		const Math::float3& boundsMax,
 		float padding);
-
-	[[nodiscard]] MeshData BuildShadowMesh(const MeshData& sourceMesh, const Math::float4x4& worldMatrix, const ShadowDesc& desc);
 }

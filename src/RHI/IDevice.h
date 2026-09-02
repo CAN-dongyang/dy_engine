@@ -26,7 +26,6 @@ namespace dy::RHI
 		// 모든 기록 draw의 합계(그림자 뷰, 메인, 후처리 포함).
 		uint32_t maxDrawsPerFrame = 128;
 		uint32_t maxBindlessTextures = 128;
-		uint32_t defaultShadowMapResolution = 2048;
 		uint64_t frameAcquireTimeoutNanoseconds = 16666667ull;
 		ShaderLayoutDesc shaderLayout = {};
 	};

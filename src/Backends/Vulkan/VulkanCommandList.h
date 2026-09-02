@@ -2,6 +2,7 @@
 #include "RHI/ICommandList.h"
 #include "VulkanDevice.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -13,7 +14,6 @@ namespace dy::Backends
 inline constexpr uint32_t kMaxDescriptorBindings = 16u;
 inline constexpr uint32_t kMaxMaterialTextures = 8u;
 inline constexpr uint32_t kMaxPushConstantBytes = 256u;
-inline constexpr uint32_t kDefaultMaxRenderTargets = 4u;
 
 class VulkanDevice;
 
@@ -46,7 +46,7 @@ public:
 		uint32_t size) override;
 	void Close() override {}
 
-	void Begin();
+	void Begin(uint32_t maxColorAttachments);
 
 private:
 	struct BufferBinding
@@ -75,7 +75,8 @@ private:
 		std::array<BufferBinding, kMaxDescriptorBindings> storageBuffers = {};
 		std::array<dy::RHI::ITexture*, kMaxDescriptorBindings> textures = {};
 		uint32_t renderTargetCount = 0u;
-		std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> renderTargets = {};
+		bool renderTargetsValid = true;
+		std::size_t renderTargetOffset = 0u;
 		dy::RHI::ITexture* depthStencil = nullptr;
 		dy::RHI::Viewport viewport = {};
 		dy::RHI::Rect scissor = {};
@@ -130,8 +131,11 @@ private:
 	};
 
 	friend struct VulkanDevice::Impl;
+	uint32_t m_maxColorAttachments = 0u;
 	uint32_t m_renderTargetCount = 0;
-	std::array<dy::RHI::ITexture*, kDefaultMaxRenderTargets> m_renderTargets = {};
+	bool m_renderTargetsValid = true;
+	std::size_t m_renderTargetOffset = 0u;
+	std::vector<dy::RHI::ITexture*> m_renderTargets;
 	dy::RHI::ITexture* m_depthStencil = nullptr;
 	dy::RHI::IPipelineState* m_boundPipeline = nullptr;
 	dy::RHI::IPipelineState* m_boundComputePipeline = nullptr;

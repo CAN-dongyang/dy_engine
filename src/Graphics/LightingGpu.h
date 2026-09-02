@@ -22,7 +22,6 @@ namespace dy::Graphics
 		ShadowLightType type = ShadowLightType::None;
 		uint32_t packedIndex = 0u;
 		uint32_t sceneIndex = 0u;
-		uint32_t index = 0u;
 		float strength = 0.0f;
 	};
 
@@ -52,19 +51,19 @@ namespace dy::Graphics
 		for(uint32_t packed = 0u; packed < static_cast<uint32_t>(directional.size()); ++packed)
 		{
 			const DirectionalLight& light = scene.GetDirectionalLight(directional[packed]);
-			if(light.castShadow) return { ShadowLightType::Directional, packed, directional[packed], directional[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
+			if(light.castShadow) return { ShadowLightType::Directional, packed, directional[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
 		}
 		const std::vector<uint32_t> spots = SelectActiveLightIndices(scene.SpotLights(), Layout::kMaxSpotLights);
 		for(uint32_t packed = 0u; packed < static_cast<uint32_t>(spots.size()); ++packed)
 		{
 			const SpotLight& light = scene.GetSpotLight(spots[packed]);
-			if(light.castShadow) return { ShadowLightType::Spot, packed, spots[packed], spots[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
+			if(light.castShadow) return { ShadowLightType::Spot, packed, spots[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
 		}
 		const std::vector<uint32_t> points = SelectActiveLightIndices(scene.PointLights(), Layout::kMaxPointLights);
 		for(uint32_t packed = 0u; packed < static_cast<uint32_t>(points.size()); ++packed)
 		{
 			const PointLight& light = scene.GetPointLight(points[packed]);
-			if(light.castShadow) return { ShadowLightType::Point, packed, points[packed], points[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
+			if(light.castShadow) return { ShadowLightType::Point, packed, points[packed], std::clamp(light.shadowStrength, 0.0f, 1.0f) };
 		}
 		return {};
 	}
@@ -91,7 +90,7 @@ namespace dy::Graphics
 		ShadowLightSelection shadowSelection = enableShadows ? SelectShadowLight(scene) : ShadowLightSelection{};
 		if(enableShadows && !hasAnySceneLight)
 		{
-			shadowSelection = { ShadowLightType::Directional, 0u, 0u, 0u, std::clamp(config.shadowStrength, 0.0f, 1.0f) };
+			shadowSelection = { ShadowLightType::Directional, 0u, 0u, std::clamp(config.shadowStrength, 0.0f, 1.0f) };
 		}
 		const bool shadowsEnabled = shadowSelection.type != ShadowLightType::None;
 		const float shadowStrength = shadowSelection.strength;

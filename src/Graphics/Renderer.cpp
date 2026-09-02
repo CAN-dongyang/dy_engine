@@ -104,56 +104,21 @@ namespace
 	}
 
 }
-
-Renderer::Renderer(RendererBindingMode bindingMode)
-	: m_initialBindingMode(bindingMode)
-{
-	m_config.bindingMode = bindingMode;
-	if(bindingMode == RendererBindingMode::Bindless)
-	{
-		m_config.enableBindlessTextures = true;
-	}
-}
-
-Renderer::Renderer(const RendererDesc& desc)
-	: m_config(desc)
-	, m_initialBindingMode(desc.bindingMode)
-	, m_hasInitialConfig(true)
-{
-	if(desc.bindingMode == RendererBindingMode::Bindless)
-	{
-		m_config.enableBindlessTextures = true;
-	}
-}
-
 bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 {
 	static_assert(Layout::kPushConstantRangeSize == sizeof(Layout::DrawConstants), "Renderer draw constants size mismatch.");
 
 	if(device == nullptr) return false;
-	RendererDesc effectiveConfig = config;
-	if(m_hasInitialConfig &&
-		config.bindingMode == RendererBindingMode::PerDrawBind &&
-		config.vertexShaderPath == nullptr &&
-		config.pixelShaderPath == nullptr &&
-		config.shadowVertexShaderPath == nullptr)
-	{
-		effectiveConfig = m_config;
-	}
 
 	const char* vertexShaderPath = nullptr;
 	const char* pixelShaderPath = nullptr;
 	const char* shadowVertexShaderPath = nullptr;
-	if(!ResolveRendererShaderPaths(effectiveConfig, vertexShaderPath, pixelShaderPath, shadowVertexShaderPath))
+	if(!ResolveRendererShaderPaths(config, vertexShaderPath, pixelShaderPath, shadowVertexShaderPath))
 	{
 		return false;
 	}
 
-	m_config = effectiveConfig;
-	if(effectiveConfig.bindingMode == RendererBindingMode::PerDrawBind && m_initialBindingMode != RendererBindingMode::PerDrawBind)
-	{
-		m_config.bindingMode = m_initialBindingMode;
-	}
+	m_config = config;
 	if(m_config.bindingMode == RendererBindingMode::Bindless)
 	{
 		m_config.enableBindlessTextures = true;
@@ -316,7 +281,6 @@ void Renderer::Shutdown(RHI::IDevice* device)
 	{
 		device->DestroyTexture(m_shadowDepthTarget);
 		m_shadowDepthTarget = nullptr;
-		m_shadowDescriptorIndex = 0xFFFFFFFFu;
 	}
 	m_shadowViewCount = 0u;
 	m_shadowAtlasColumns = 1u;
@@ -449,7 +413,6 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 	desc.wireframe = false;
 	desc.enableBindlessTextures = m_config.enableBindlessTextures;
 	desc.resourceProfile = resourceProfile;
-	// desc.shaderLayout = m_config.shaderLayout;
 
 	m_pipeline = device->CreateGraphicsPipeline(desc);
 	if(m_config.enableHdrRendering && !m_toneMapVertexShaderSource.empty() && !m_toneMapPixelShaderSource.empty())
@@ -643,7 +606,6 @@ void Renderer::EnsureShadowDepthTarget(RHI::IDevice* device)
 	{
 		device->DestroyTexture(m_shadowDepthTarget);
 		m_shadowDepthTarget = nullptr;
-		m_shadowDescriptorIndex = 0xFFFFFFFFu;
 	}
 
 	const RHI::Format shadowFormat = m_config.depthStencilFormat != RHI::Format::Unknown
@@ -658,14 +620,6 @@ void Renderer::EnsureShadowDepthTarget(RHI::IDevice* device)
 	shadowDesc.format = shadowFormat;
 	shadowDesc.usage = RHI::TextureUsage::DepthStencil | RHI::TextureUsage::ShaderResource;
 	m_shadowDepthTarget = device->CreateTexture(shadowDesc);
-	if(m_shadowDepthTarget == nullptr) return;
-
-	// 그림자 맵 SRV 를 글로벌 디스크립터 힙에 한 번 등록(메인 패스에서 샘플링).
-	m_shadowDescriptorIndex = device->AllocateDescriptorSlot();
-	if(m_shadowDescriptorIndex != RHI::INVALID_DESCRIPTOR_INDEX)
-	{
-		device->UpdateDescriptorSlot(m_shadowDescriptorIndex, m_shadowDepthTarget);
-	}
 }
 
 void Renderer::EnsureMaterialStateCapacity(std::size_t materialCount)

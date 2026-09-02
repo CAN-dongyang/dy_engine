@@ -6,7 +6,6 @@
 #include <functional>
 #include <limits>
 #include <map>
-#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -24,77 +23,6 @@ namespace dy::Graphics::ModelLoaderInternal
 {
 	namespace
 	{
-		class ModelLoadBudget
-		{
-		public:
-			ModelLoadBudget(const std::string& path, const ModelLoadOptions& options)
-				: m_path(path), m_options(options)
-			{
-			}
-
-			[[nodiscard]] bool CheckNodes(uint64_t count) const
-			{
-				if(count <= m_options.maxNodes) return true;
-				std::ostringstream message;
-				message << "model node count " << count << " exceeds limit " << m_options.maxNodes;
-				return ReportModelError(ModelDiagnosticCode::ResourceLimitExceeded, m_path, message.str());
-			}
-
-			[[nodiscard]] bool CheckJoints(uint64_t count) const
-			{
-				if(count <= m_options.maxJointsPerSkin) return true;
-				std::ostringstream message;
-				message << "skin joint count " << count << " exceeds limit " << m_options.maxJointsPerSkin;
-				return ReportModelError(ModelDiagnosticCode::ResourceLimitExceeded, m_path, message.str());
-			}
-
-			[[nodiscard]] bool AddAnimationKeys(uint64_t count)
-			{
-				if(count > std::numeric_limits<uint64_t>::max() - m_animationKeys
-					|| m_animationKeys + count > m_options.maxAnimationKeys)
-				{
-					std::ostringstream message;
-					message << "animation key count exceeds limit " << m_options.maxAnimationKeys;
-					return ReportModelError(ModelDiagnosticCode::ResourceLimitExceeded, m_path, message.str());
-				}
-				m_animationKeys += count;
-				return true;
-			}
-
-			[[nodiscard]] bool AddBytes(uint64_t count, uint64_t stride, const char* category)
-			{
-				if(count != 0u && stride > std::numeric_limits<uint64_t>::max() / count)
-				{
-					return ReportModelError(
-						ModelDiagnosticCode::ResourceLimitExceeded,
-						m_path,
-						std::string(category) + " byte-size calculation overflow");
-				}
-				const uint64_t bytes = count * stride;
-				if(bytes > std::numeric_limits<uint64_t>::max() - m_decodedBytes
-					|| m_decodedBytes + bytes > m_options.maxDecodedBytes)
-				{
-					std::ostringstream message;
-					message << "estimated decoded bytes exceed limit " << m_options.maxDecodedBytes
-						<< " while accounting for " << category;
-					return ReportModelError(ModelDiagnosticCode::ResourceLimitExceeded, m_path, message.str());
-				}
-				m_decodedBytes += bytes;
-				return true;
-			}
-
-		private:
-			const std::string& m_path;
-			const ModelLoadOptions& m_options;
-			uint64_t m_decodedBytes = 0u;
-			uint64_t m_animationKeys = 0u;
-		};
-		[[nodiscard]] uint32_t EnsureDefaultMaterial(ModelData& model)
-		{
-			const uint32_t defaultMaterialIndex = static_cast<uint32_t>(model.materials.size());
-			model.materials.push_back({});
-			return defaultMaterialIndex;
-		}
 		void SetTexturePath(ModelMaterialInfo& material, MaterialTextureKind kind, std::string path)
 		{
 			const uint32_t index = static_cast<uint32_t>(kind);

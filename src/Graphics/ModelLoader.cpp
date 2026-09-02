@@ -89,21 +89,6 @@ namespace dy::Graphics
 
 	using ModelLoaderInternal::ReportModelDiagnostic;
 
-	bool ModelLoader::Load(const std::string& path, ModelData& outModel, const ModelLoadOptions& options)
-	{
-		return LoadModel(path, outModel, options);
-	}
-
-	bool ModelLoader::LoadMesh(const std::string& path, MeshData& outMesh, ModelMaterialInfo* outMaterial, const ModelLoadOptions& options)
-	{
-		return Graphics::LoadMesh(path, outMesh, outMaterial, options);
-	}
-
-	bool ModelLoader::LoadMesh(const std::string& path, MeshData& outMesh, std::string* outBaseColorTexturePath, const ModelLoadOptions& options)
-	{
-		return Graphics::LoadMesh(path, outMesh, outBaseColorTexturePath, options);
-	}
-
 	bool LoadModel(const std::string& path, ModelData& outModel, const ModelLoadOptions& options)
 	{
 		return LoadModelDetailed(path, outModel, options).success;
