@@ -102,5 +102,10 @@ namespace dy::Graphics
 		float shadowLightRadius = 0.05f;
 		float shadowBlockerSearchRadius = 2.0f;
 		float shadowMaxFilterRadius = 8.0f;
+		// Built-in, API-neutral overlay. It is rendered into the application
+		// backbuffer and never requires the external Tracy viewer.
+		bool enableProfilerHud = true;
+		bool profilerHudStartsExpanded = false;
+
 	};
 }

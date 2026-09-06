@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "Graphics/Scene.h"
+#include "Graphics/ProfilerHud.h"
+#include "Platform/Profiler.h"
 #include "RHI/IBuffer.h"
 #include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
@@ -41,6 +43,8 @@ namespace
 			if(scene.IsEntitySkinned(static_cast<EntityID>(entityIndex))) return true;
 		return false;
 	}
+	constexpr RHI::DebugLabelColor kShadowDebugColor = { 0.45f, 0.35f, 0.90f, 1.0f };
+	constexpr RHI::DebugLabelColor kMainForwardDebugColor = { 0.15f, 0.65f, 0.95f, 1.0f };
 
 	struct RendererVertex
 	{
@@ -540,6 +544,7 @@ namespace
 
 	void PerDrawBindPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::PrepareResources");
 		if(device == nullptr) return;
 		m_skinningEnabled = device->SupportsSkinningStorageBindings();
 		if(m_skinningEnabled)
@@ -770,7 +775,11 @@ namespace
 
 	void PerDrawBindPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "Shadow");
+		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
+		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -834,6 +843,7 @@ namespace
 
 	void PerDrawBindPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("PerDrawBind::RecordMainPass");
 		RHI::ICommandList* commandList = device->AcquireCommandList();
 		RHI::ITexture* backBuffer = context.mainColorTarget != nullptr ? context.mainColorTarget : device->GetBackBuffer();
 		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
@@ -861,6 +871,9 @@ namespace
 				0u,
 				activeInstanceBufferBytes);
 		}
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "MainForward");
+		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
+		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -918,6 +931,12 @@ namespace
 			commandList->DrawIndexedInstanced(meshState.indexCount, 1, 0, 0, 0);
 		}
 
+		debugEvent.End();
+		gpuTiming.End();
+		if(context.profilerHud != nullptr && !context.deferSubmit)
+		{
+			context.profilerHud->Record(commandList, context.profilerHudPipeline, context.lightingBuffer, context.shadowMatrixBuffer);
+		}
 		if(!context.deferSubmit) SubmitMainPass(device, commandList);
 	}
 
@@ -1074,6 +1093,7 @@ namespace
 
 	void BatchedGeometryPath::PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext&)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::PrepareResources");
 		if(!m_warnedSkinnedModels && SceneHasSkinnedEntity(scene))
 		{
 			std::cerr
@@ -1092,7 +1112,11 @@ namespace
 
 	void BatchedGeometryPath::RecordShadowDraws(RHI::ICommandList* commandList, const Scene& scene, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordShadowDraws");
 		BeginShadowPass(commandList, context);
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "Shadow");
+		RHI::CommandDebugEventScope debugEvent(commandList, "Shadow", kShadowDebugColor);
+		commandList->InsertDebugMarker("Shadow.Draws", kShadowDebugColor);
 
 		const RendererDesc& config = *context.config;
 		const std::vector<SceneMaterialState>& materialStates = *context.materialStates;
@@ -1142,6 +1166,7 @@ namespace
 
 	void BatchedGeometryPath::RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 	{
+		DY_PROFILE_CPU_ZONE_NAMED("BatchedBind::RecordMainPass");
 		if(m_vertexBuffer == nullptr || m_indexBuffer == nullptr || m_meshRanges.empty()) return;
 
 		RHI::ICommandList* commandList = device->AcquireCommandList();
@@ -1154,6 +1179,9 @@ namespace
 		}
 
 		if(!BeginMainPassOn(commandList, backBuffer, context)) return;
+		RHI::CommandGpuTimestampScope gpuTiming(commandList, "MainForward");
+		RHI::CommandDebugEventScope debugEvent(commandList, "MainForward", kMainForwardDebugColor);
+		commandList->InsertDebugMarker("MainForward.Draws", kMainForwardDebugColor);
 
 		RHI::GeometryBinding geometry = {};
 		geometry.vertexBuffer = m_vertexBuffer;
@@ -1191,6 +1219,12 @@ namespace
 			}
 		}
 
+		debugEvent.End();
+		gpuTiming.End();
+		if(context.profilerHud != nullptr && !context.deferSubmit)
+		{
+			context.profilerHud->Record(commandList, context.profilerHudPipeline, context.lightingBuffer, context.shadowMatrixBuffer);
+		}
 		if(!context.deferSubmit) SubmitMainPass(device, commandList);
 	}
 

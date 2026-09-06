@@ -16,6 +16,8 @@
 #include "Graphics/ShadowMath.h"
 #include "Graphics/SkinningPass.h"
 #include "Math/Math.h"
+#include "Platform/Profiler.h"
+#include "Platform/Window.h"
 #include "RHI/IBuffer.h"
 #include "RHI/ICommandList.h"
 #include "RHI/IDevice.h"
@@ -106,6 +108,7 @@ namespace
 }
 bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Initialize");
 	static_assert(Layout::kPushConstantRangeSize == sizeof(Layout::DrawConstants), "Renderer draw constants size mismatch.");
 
 	if(device == nullptr) return false;
@@ -186,6 +189,10 @@ bool Renderer::Initialize(RHI::IDevice* device, const RendererDesc& config)
 	BuildPipelineStates(device);
 	BuildRenderPassPlan();
 	m_path = CreateRenderPath(m_config.bindingMode);
+	if(m_config.enableProfilerHud)
+	{
+		m_profilerHud.Initialize(device, m_config.profilerHudStartsExpanded);
+	}
 	return m_pipeline != nullptr && m_path != nullptr && (!m_config.enableHdrRendering || m_toneMapPipeline != nullptr);
 }
 
@@ -247,7 +254,11 @@ void Renderer::SetEnvironmentLight(const EnvironmentDesc& environment)
 
 void Renderer::Shutdown(RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Shutdown");
 	if(device == nullptr) return;
+	m_profilerHud.Shutdown(device);
+	m_hasLastFrameStart = false;
+	m_lastCpuRenderMilliseconds = 0.0;
 
 	if(m_path != nullptr) m_path->Shutdown(device);
 	m_path.reset();
@@ -305,6 +316,11 @@ void Renderer::Shutdown(RHI::IDevice* device)
 		device->DestroyPipelineState(m_toneMapPipeline);
 		m_toneMapPipeline = nullptr;
 	}
+	if(m_profilerHudPipeline != nullptr)
+	{
+		device->DestroyPipelineState(m_profilerHudPipeline);
+		m_profilerHudPipeline = nullptr;
+	}
 	if(m_pipeline != nullptr)
 	{
 		device->DestroyPipelineState(m_pipeline);
@@ -315,7 +331,40 @@ void Renderer::Shutdown(RHI::IDevice* device)
 
 void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::Render");
 	if(device == nullptr || m_path == nullptr) return;
+	const auto renderStart = std::chrono::steady_clock::now();
+	double frameMilliseconds = 0.0;
+	if(m_hasLastFrameStart)
+	{
+		frameMilliseconds = std::chrono::duration<double, std::milli>(renderStart - m_lastFrameStart).count();
+	}
+	m_lastFrameStart = renderStart;
+	m_hasLastFrameStart = true;
+	if(m_config.enableProfilerHud && Platform::Window::ConsumeKeyPress(Platform::Key::F11))
+	{
+		m_profilerHud.ToggleExpanded();
+	}
+
+	// Backends publish only completed-frame results. Because this lives in the
+	// engine renderer, every application using dy_engine gets the same plots.
+	RHI::GpuTimestampResult gpuTimestamp = {};
+	if(device->TryGetLastGpuTimestamp("Shadow", gpuTimestamp))
+	{
+		DY_PROFILE_GPU_MILLISECONDS("GPU.Shadow.ms", static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0);
+	}
+	const bool hasGpuMainTimestamp = device->TryGetLastGpuTimestamp("MainForward", gpuTimestamp);
+	const double gpuMainMilliseconds = hasGpuMainTimestamp
+		? static_cast<double>(gpuTimestamp.durationNanoseconds) / 1000000.0
+		: 0.0;
+	if(hasGpuMainTimestamp)
+	{
+		DY_PROFILE_GPU_MILLISECONDS("GPU.MainForward.ms", gpuMainMilliseconds);
+	}
+	const RHI::ResourceAllocationCounters resourceCounters = device->GetResourceAllocationCounters();
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Buffers.Live", resourceCounters.buffers.live);
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Textures.Live", resourceCounters.textures.live);
+	DY_PROFILE_RESOURCE_COUNT("GPU.Resources.Pipelines.Live", resourceCounters.pipelines.live);
 
 	// 공유 준비: 텍스처 GPU 레지던시 + 머티리얼 상태(모든 전략 공통).
 	m_gpuScene.SyncTextures(scene, device);
@@ -343,6 +392,30 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	UpdateLightingBuffer(scene, device);
 	context.lightingBuffer = m_lightingBuffer;
 	context.shadowMatrixBuffer = m_shadowMatrixBuffer;
+	if(m_config.enableProfilerHud && m_profilerHudPipeline != nullptr)
+	{
+		if(RHI::ITexture* backBuffer = device->GetBackBuffer())
+		{
+			ProfilerHudMetrics metrics = {};
+			metrics.frameMilliseconds = frameMilliseconds;
+			metrics.fps = frameMilliseconds > 0.001 ? 1000.0 / frameMilliseconds : 0.0;
+			metrics.cpuRenderMilliseconds = m_lastCpuRenderMilliseconds;
+			metrics.gpuMainMilliseconds = gpuMainMilliseconds;
+			metrics.hasGpuMain = hasGpuMainTimestamp;
+			metrics.liveBuffers = resourceCounters.buffers.live;
+			metrics.createdBuffers = resourceCounters.buffers.created;
+			metrics.destroyedBuffers = resourceCounters.buffers.destroyed;
+			metrics.liveTextures = resourceCounters.textures.live;
+			metrics.createdTextures = resourceCounters.textures.created;
+			metrics.destroyedTextures = resourceCounters.textures.destroyed;
+			metrics.livePipelines = resourceCounters.pipelines.live;
+			metrics.createdPipelines = resourceCounters.pipelines.created;
+			metrics.destroyedPipelines = resourceCounters.pipelines.destroyed;
+			m_profilerHud.PrepareFrame(device, metrics, backBuffer->GetWidth(), backBuffer->GetHeight(), m_clipYFlip);
+			context.profilerHudPipeline = m_profilerHudPipeline;
+			context.profilerHud = &m_profilerHud;
+		}
+	}
 
 	// RenderPath가 메인 패스 전에 깊이 전용 그림자 패스를 기록한다.
 	if(m_useExplicitShadowPass)
@@ -406,10 +479,13 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 	m_renderGraph.Execute(nullptr);
 	// Callbacks borrow this Render call's context; do not retain them past it.
 	m_renderGraph.Reset();
+	m_lastCpuRenderMilliseconds = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - renderStart).count();
 }
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::BuildPipelineStates");
 	const RHI::GraphicsResourceProfile automaticResourceProfile = [this]()
 	{
 		switch(m_config.bindingMode)
@@ -476,6 +552,14 @@ void Renderer::BuildPipelineStates(RHI::IDevice* device)
 			m_activeSkinningExecutionMode = SkinningExecutionMode::VertexShader;
 			std::fprintf(stderr, "Compute skinning pipeline creation failed; falling back to vertex-shader skinning.\n");
 		}
+	}
+	if(m_config.enableProfilerHud)
+	{
+		RHI::GraphicsPipelineDesc hudDesc = desc;
+		hudDesc.depthEnable = false;
+		hudDesc.depthStencilFormat = RHI::Format::Unknown;
+		hudDesc.renderTargetFormat = device->GetBackBuffer()->GetFormat();
+		m_profilerHudPipeline = device->CreateGraphicsPipeline(hudDesc);
 	}
 
 	// 별도의 깊이 전용 PSO(픽셀 셰이더 없음)를 만들어 Graphics에서 그림자 패스를 기록한다.
@@ -618,6 +702,7 @@ void Renderer::RecordToneMapPass(RHI::IDevice* device)
 		0.0f);
 	commandList->SetInlineConstants(sizeof(constants), &constants);
 	commandList->DrawInstanced(3u, 1u, 0u, 0u);
+	if(m_config.enableProfilerHud) m_profilerHud.Record(commandList, m_profilerHudPipeline, m_lightingBuffer, m_shadowMatrixBuffer);
 	commandList->Close();
 	RHI::ICommandList* commandLists[] = { commandList };
 	device->Submit(commandLists, 1u);
@@ -665,6 +750,7 @@ void Renderer::EnsureMaterialStateCapacity(std::size_t materialCount)
 
 void Renderer::UpdateMaterialStates(const Scene& scene)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateMaterialStates");
 	const uint32_t materialCount = scene.GetMaterialCount();
 	for(uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex)
 	{
@@ -699,6 +785,7 @@ void Renderer::UpdateMaterialStates(const Scene& scene)
 
 void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateLightingBuffer");
 	if(m_lightingBuffer == nullptr)
 	{
 		m_lightingBuffer = device->CreateBuffer(RHI::BufferDesc{
@@ -723,6 +810,7 @@ void Renderer::UpdateLightingBuffer(const Scene& scene, RHI::IDevice* device)
 
 void Renderer::UpdateShadowBuffer(const Scene& scene, RHI::IDevice* device)
 {
+	DY_PROFILE_CPU_ZONE_NAMED("Renderer::UpdateShadowBuffer");
 	if(m_shadowMatrixBuffer == nullptr)
 	{
 		m_shadowMatrixBuffer = device->CreateBuffer(RHI::BufferDesc{

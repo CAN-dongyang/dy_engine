@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace dy::Backends
@@ -44,9 +45,21 @@ public:
 		dy::RHI::BufferAccess destinationAccess,
 		uint32_t offset,
 		uint32_t size) override;
-	void Close() override {}
 
-	void Begin(uint32_t maxColorAttachments);
+	void Begin(uint32_t maxColorAttachments, uint32_t maxDrawsPerFrame);
+	[[nodiscard]] uint32_t GetRemainingDrawCapacity() const override
+	{
+		return m_drawCalls.size() < m_maxDrawsPerFrame
+			? m_maxDrawsPerFrame - static_cast<uint32_t>(m_drawCalls.size()) : 0u;
+	}
+	void BeginDebugEvent(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
+	void EndDebugEvent() override;
+	void InsertDebugMarker(const char* name, const dy::RHI::DebugLabelColor& color = {}) override;
+	bool BeginGpuTimestamp(const char* name) override;
+	void EndGpuTimestamp() override;
+	void Close() override;
+
+	void SetGpuTimestampScopeCapacity(uint32_t capacity) { m_gpuTimestampScopeCapacity = capacity; }
 
 private:
 	struct BufferBinding
@@ -121,7 +134,9 @@ private:
 		Dispatch,
 		BufferBarrier,
 		ClearColor,
-		ClearDepth
+		ClearDepth,
+		DebugEvent,
+		GpuTimestamp
 	};
 
 	struct WorkItem
@@ -130,8 +145,39 @@ private:
 		uint32_t index = 0u;
 	};
 
+	enum class DebugEventType
+	{
+		Begin,
+		End,
+		Marker
+	};
+
+	struct DebugEvent
+	{
+		DebugEventType type = DebugEventType::Marker;
+		uint32_t drawIndex = 0;
+		bool depthOnlyPass = false;
+		std::string name;
+		dy::RHI::DebugLabelColor color = {};
+	};
+
+	enum class GpuTimestampEventType
+	{
+		Begin,
+		End
+	};
+
+	struct GpuTimestampEvent
+	{
+		GpuTimestampEventType type = GpuTimestampEventType::Begin;
+		uint32_t drawIndex = 0;
+		bool depthOnlyPass = false;
+		std::string name;
+	};
+
 	friend struct VulkanDevice::Impl;
 	uint32_t m_maxColorAttachments = 0u;
+	uint32_t m_maxDrawsPerFrame = 0u;
 	uint32_t m_renderTargetCount = 0;
 	bool m_renderTargetsValid = true;
 	std::size_t m_renderTargetOffset = 0u;
@@ -155,6 +201,13 @@ private:
 	std::vector<ColorClear> m_colorClears;
 	std::vector<DepthClear> m_depthClears;
 	std::vector<WorkItem> m_workItems;
+	std::vector<DebugEvent> m_debugEvents;
+	uint32_t m_debugEventDepth = 0;
+	std::vector<GpuTimestampEvent> m_gpuTimestampEvents;
+	uint32_t m_gpuTimestampDepth = 0;
+	uint32_t m_gpuTimestampScopeCapacity = 0;
+	uint32_t m_gpuTimestampScopeCount = 0;
+	bool m_isClosed = false;
 };
 
 }
