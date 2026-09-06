@@ -473,6 +473,11 @@ namespace
 		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void RecordSkinningPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
+		void RecordShadowPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override
+		{
+			if(device == nullptr || !ShouldRecordShadow(context)) return;
+			if(auto* commandList = device->AcquireCommandList()) RecordShadowDraws(commandList, scene, context);
+		}
 		void Shutdown(RHI::IDevice* device) override;
 
 	private:
@@ -833,7 +838,7 @@ namespace
 		RHI::ITexture* backBuffer = context.mainColorTarget != nullptr ? context.mainColorTarget : device->GetBackBuffer();
 		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
 
-		if(ShouldRecordShadow(context))
+		if(ShouldRecordShadow(context) && !context.shadowPassRecorded)
 		{
 			RecordShadowDraws(commandList, scene, context);
 		}
@@ -1043,6 +1048,11 @@ namespace
 		explicit BatchedGeometryPath(RendererBindingMode bindingMode) : m_bindingMode(bindingMode) {}
 		void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
 		void RecordMainPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override;
+		void RecordShadowPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) override
+		{
+			if(device == nullptr || !ShouldRecordShadow(context)) return;
+			if(auto* commandList = device->AcquireCommandList()) RecordShadowDraws(commandList, scene, context);
+		}
 		void Shutdown(RHI::IDevice* device) override;
 
 	private:
@@ -1138,7 +1148,7 @@ namespace
 		RHI::ITexture* backBuffer = context.mainColorTarget != nullptr ? context.mainColorTarget : device->GetBackBuffer();
 		if(commandList == nullptr || backBuffer == nullptr || context.pipeline == nullptr) return;
 
-		if(ShouldRecordShadow(context))
+		if(ShouldRecordShadow(context) && !context.shadowPassRecorded)
 		{
 			RecordShadowDraws(commandList, scene, context);
 		}
