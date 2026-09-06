@@ -76,6 +76,7 @@ namespace dy::Graphics
 		uint32_t shadowAtlasColumns = 1;
 		uint32_t shadowAtlasRows = 1;
 		bool deferSubmit = false;
+		bool shadowPassRecorded = false;
 	};
 
 	class IRenderPath
@@ -85,6 +86,7 @@ namespace dy::Graphics
 
 		// 씬 지오메트리/드로우 리소스를 GPU 에 준비한다(전략별 레이아웃).
 		virtual void PrepareResources(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context) = 0;
+		virtual void RecordShadowPass(const Scene&, RHI::IDevice*, const RenderPathContext&) {}
 		virtual void RecordSkinningPass(const Scene& scene, RHI::IDevice* device, const RenderPathContext& context)
 		{
 			(void)scene; (void)device; (void)context;

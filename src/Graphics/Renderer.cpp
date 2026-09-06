@@ -359,20 +359,53 @@ void Renderer::Render(const Scene& scene, RHI::IDevice* device)
 		}
 	}
 
-	// 정식화된 패스 루프: 모든 전략이 동일 경로를 거친다.
+	// The graph schedules CPU recording. Resource transitions and submission
+	// remain in the existing RenderPath/RHI implementation.
+	m_renderGraph.Reset();
+	const auto backBuffer = m_renderGraph.ImportTexture("BackBuffer", device->GetBackBuffer());
+	const auto mainColor = context.mainColorTarget != nullptr
+		? m_renderGraph.ImportTexture("HdrColor", context.mainColorTarget) : backBuffer;
+	const auto depth = m_renderGraph.ImportTexture("Depth", context.depthStencil);
+	const auto shadow = m_renderGraph.ImportTexture("Shadow", context.shadowDepth);
+	// A logical dependency for the per-entity buffers owned by RenderPath.
+	const auto geometry = m_renderGraph.ImportBuffer("SkinnedGeometry", nullptr);
 	for(const RenderPassDesc& pass : m_renderPasses)
 	{
 		if(!pass.enabled) continue;
 		if(pass.kind == RenderPassKind::Skinning && pass.work == RenderPassWork::Compute)
 		{
-			m_path->RecordSkinningPass(scene, device, context);
+			m_renderGraph.AddPass("Skinning").Write(geometry, RGResourceAccess::UnorderedAccess)
+				.SetExecute([&](RHI::ICommandList*) { m_path->RecordSkinningPass(scene, device, context); });
+		}
+		else if(pass.kind == RenderPassKind::Shadow && pass.work == RenderPassWork::Graphics
+			&& context.shadowDepth != nullptr && context.shadowPipeline != nullptr)
+		{
+			m_renderGraph.AddPass("Shadow").Read(geometry, RGResourceAccess::ShaderRead)
+				.Write(shadow, RGResourceAccess::DepthWrite)
+				.SetExecute([&](RHI::ICommandList*) {
+					m_path->RecordShadowPass(scene, device, context);
+					context.shadowPassRecorded = true;
+				});
 		}
 		else if(pass.kind == RenderPassKind::MainForward && pass.work == RenderPassWork::Graphics)
 		{
-			m_path->RecordMainPass(scene, device, context);
+			auto& mainPass = m_renderGraph.AddPass("MainForward");
+			mainPass.Read(geometry, RGResourceAccess::ShaderRead).Write(mainColor, RGResourceAccess::RenderTarget);
+			if(context.shadowDepth != nullptr) mainPass.Read(shadow, RGResourceAccess::ShaderRead);
+			if(context.depthStencil != nullptr) mainPass.Write(depth, RGResourceAccess::DepthWrite);
+			mainPass.SetExecute([&](RHI::ICommandList*) { m_path->RecordMainPass(scene, device, context); });
 		}
 	}
-	if(context.deferSubmit) RecordToneMapPass(device);
+	if(context.deferSubmit)
+	{
+		m_renderGraph.AddPass("ToneMap").Read(mainColor, RGResourceAccess::ShaderRead)
+			.Write(backBuffer, RGResourceAccess::RenderTarget)
+			.SetExecute([&](RHI::ICommandList*) { RecordToneMapPass(device); });
+	}
+	if(!m_renderGraph.Compile()) throw std::runtime_error("Renderer RenderGraph contains invalid dependencies.");
+	m_renderGraph.Execute(nullptr);
+	// Callbacks borrow this Render call's context; do not retain them past it.
+	m_renderGraph.Reset();
 }
 
 void Renderer::BuildPipelineStates(RHI::IDevice* device)
@@ -485,7 +518,7 @@ void Renderer::BuildRenderPassPlan()
 	});
 	m_renderPasses.push_back(RenderPassDesc{
 		RenderPassKind::Shadow,
-		RenderPassWork::PrepareOnly,
+		RenderPassWork::Graphics,
 		"Shadow",
 		m_config.enableShadows && !m_shadowVertexShaderSource.empty()
 	});
