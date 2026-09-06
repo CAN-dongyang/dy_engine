@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 
 #include "Format.h"
 #include "ShaderLayout.h"
@@ -30,10 +31,38 @@ namespace dy::RHI
 		ShaderLayoutDesc shaderLayout = {};
 	};
 
+	struct GpuTimestampResult
+	{
+		uint64_t durationNanoseconds = 0;
+		uint64_t frameSerial = 0;
+	};
+
+	struct ResourceAllocationCounter
+	{
+		uint64_t live = 0;
+		uint64_t created = 0;
+		uint64_t destroyed = 0;
+	};
+
+	// Counts RHI GPU objects only. These are deliberately object counters, not
+	// CPU heap hooks, requested bytes, native heap sizes, or residency metrics.
+	struct ResourceAllocationCounters
+	{
+		ResourceAllocationCounter buffers = {};
+		ResourceAllocationCounter textures = {};
+		ResourceAllocationCounter pipelines = {};
+
+		[[nodiscard]] uint64_t GetTotalLive() const
+		{
+			return buffers.live + textures.live + pipelines.live;
+		}
+	};
+
 	class IDevice
 	{
 	public:
-		virtual ~IDevice() = default;
+		IDevice();
+		virtual ~IDevice();
 		[[nodiscard]] static IDevice* Create(const void* windowHandle, const DeviceDesc& desc = {});
 		[[nodiscard]] const DeviceDesc& GetDesc() const { return m_desc; }
 
@@ -61,6 +90,18 @@ namespace dy::RHI
 		virtual void DestroyPipelineState(IPipelineState* pipeline) = 0;
 
 		virtual bool UpdateTexture(ITexture* texture, const void* data, uint32_t rowPitch) = 0;
+		[[nodiscard]] ResourceAllocationCounters GetResourceAllocationCounters() const;
+
+		// Timestamp results are intentionally delayed: true means a completed GPU
+		// frame has published a value for this name, never an in-flight estimate.
+		[[nodiscard]] virtual bool SupportsGpuTimestamps() const { return false; }
+		[[nodiscard]] virtual uint32_t GetMaxGpuTimestampScopes() const { return 0; }
+		[[nodiscard]] virtual bool TryGetLastGpuTimestamp(const char* name, GpuTimestampResult& result) const
+		{
+			(void)name;
+			(void)result;
+			return false;
+		}
 
 		// Graphics가 그림자 깊이 패스를 명시적으로 기록해야 하는 백엔드.
 		[[nodiscard]] virtual bool RequiresExplicitShadowPass() const { return false; }
@@ -77,10 +118,21 @@ namespace dy::RHI
 
 	protected:
 		virtual int Initialize(const void* windowHandle, const DeviceDesc& desc) = 0;
+		bool TrackBufferCreated(IBuffer* buffer);
+		bool TrackTextureCreated(ITexture* texture);
+		bool TrackPipelineCreated(IPipelineState* pipeline);
+		bool TrackBufferDestroyed(IBuffer* buffer);
+		bool TrackTextureDestroyed(ITexture* texture);
+		bool TrackPipelineDestroyed(IPipelineState* pipeline);
 
 	private:
+		enum class ResourceKind : uint8_t { Buffer, Texture, Pipeline };
+		struct ResourceCounterState;
+		bool TrackResourceCreated(ResourceKind kind, const void* resource);
+		bool TrackResourceDestroyed(ResourceKind kind, const void* resource);
 		void SetDesc(const DeviceDesc& desc) { m_desc = desc; }
 
 		DeviceDesc m_desc = {};
+		std::unique_ptr<ResourceCounterState> m_resourceCounterState;
 	};
 }

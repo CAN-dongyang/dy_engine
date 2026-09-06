@@ -36,6 +36,10 @@ public:
 	[[nodiscard]] dy::RHI::ITexture* GetBackBuffer() override;
 	
 	[[nodiscard]] bool RequiresExplicitShadowPass() const override { return true; }
+	[[nodiscard]] bool SupportsGpuTimestamps() const override;
+	[[nodiscard]] uint32_t GetMaxGpuTimestampScopes() const override;
+	[[nodiscard]] bool TryGetLastGpuTimestamp(const char* name, dy::RHI::GpuTimestampResult& result) const override;
+
 	[[nodiscard]] bool RequiresClipSpaceYFlip() const override { return true; }
 	[[nodiscard]] bool SupportsShadowAtlas() const override { return true; }
 	[[nodiscard]] bool SupportsSkinningStorageBindings() const override;

@@ -1,13 +1,15 @@
 #include "VulkanCommandList.h"
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace dy::Backends
 {
 
-void VulkanCommandList::Begin(uint32_t maxColorAttachments)
+void VulkanCommandList::Begin(uint32_t maxColorAttachments, uint32_t maxDrawsPerFrame)
 {
 	m_maxColorAttachments = maxColorAttachments;
+	m_maxDrawsPerFrame = maxDrawsPerFrame;
 	m_renderTargetCount = 0;
 	m_renderTargetsValid = true;
 	m_renderTargetOffset = 0u;
@@ -28,6 +30,12 @@ void VulkanCommandList::Begin(uint32_t maxColorAttachments)
 	m_colorClears.clear();
 	m_depthClears.clear();
 	m_workItems.clear();
+	m_debugEvents.clear();
+	m_debugEventDepth = 0;
+	m_gpuTimestampEvents.clear();
+	m_gpuTimestampDepth = 0;
+	m_gpuTimestampScopeCount = 0;
+	m_isClosed = false;
 }
 
 void VulkanCommandList::BindGraphicsPipeline(dy::RHI::IPipelineState* pipelineState)
@@ -188,6 +196,60 @@ void VulkanCommandList::DrawIndexedInstanced(uint32_t indexCount, uint32_t insta
 	}
 	m_drawCalls.push_back(drawCall);
 	m_workItems.push_back(WorkItem{ WorkType::Draw, static_cast<uint32_t>(m_drawCalls.size() - 1u) });
+}
+
+void VulkanCommandList::BeginDebugEvent(const char* name, const dy::RHI::DebugLabelColor& color)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan debug event name must not be empty.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::Begin, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name, color });
+	m_workItems.push_back({ WorkType::DebugEvent, static_cast<uint32_t>(m_debugEvents.size() - 1u) });
+	++m_debugEventDepth;
+}
+
+void VulkanCommandList::EndDebugEvent()
+{
+	if (m_debugEventDepth == 0) throw std::logic_error("Vulkan debug event end has no matching begin.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::End, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, {}, {} });
+	m_workItems.push_back({ WorkType::DebugEvent, static_cast<uint32_t>(m_debugEvents.size() - 1u) });
+	--m_debugEventDepth;
+}
+
+void VulkanCommandList::InsertDebugMarker(const char* name, const dy::RHI::DebugLabelColor& color)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan debug marker name must not be empty.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_debugEvents.push_back({ DebugEventType::Marker, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name, color });
+	m_workItems.push_back({ WorkType::DebugEvent, static_cast<uint32_t>(m_debugEvents.size() - 1u) });
+}
+
+bool VulkanCommandList::BeginGpuTimestamp(const char* name)
+{
+	if (name == nullptr || name[0] == '\0') throw std::invalid_argument("Vulkan GPU timestamp name must not be empty.");
+	if (m_gpuTimestampScopeCount >= m_gpuTimestampScopeCapacity) return false;
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_gpuTimestampEvents.push_back({ GpuTimestampEventType::Begin, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, name });
+	m_workItems.push_back({ WorkType::GpuTimestamp, static_cast<uint32_t>(m_gpuTimestampEvents.size() - 1u) });
+	++m_gpuTimestampDepth;
+	++m_gpuTimestampScopeCount;
+	return true;
+}
+
+void VulkanCommandList::EndGpuTimestamp()
+{
+	if (m_gpuTimestampDepth == 0) throw std::logic_error("Vulkan GPU timestamp end has no matching begin.");
+	const bool depthOnlyPass = m_renderTargetCount == 0 && m_depthStencil != nullptr;
+	m_gpuTimestampEvents.push_back({ GpuTimestampEventType::End, static_cast<uint32_t>(m_drawCalls.size()), depthOnlyPass, {} });
+	m_workItems.push_back({ WorkType::GpuTimestamp, static_cast<uint32_t>(m_gpuTimestampEvents.size() - 1u) });
+	--m_gpuTimestampDepth;
+}
+
+void VulkanCommandList::Close()
+{
+	if (m_debugEventDepth != 0) throw std::logic_error("Vulkan command list closed with an unbalanced debug event.");
+	if (m_gpuTimestampDepth != 0) throw std::logic_error("Vulkan command list closed with an unbalanced GPU timestamp.");
+	m_isClosed = true;
 }
 
 void VulkanCommandList::Dispatch(

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "Graphics/RenderGraph.h"
 #include "Graphics/RenderPass.h"
 #include "Graphics/RenderPath.h"
+#include "Graphics/ProfilerHud.h"
 #include "Graphics/RendererConfig.h"
 #include "Graphics/RendererShaderLayout.h"
 
@@ -70,6 +72,7 @@ namespace dy::Graphics
 		RHI::IPipelineState* m_shadowPipeline = nullptr;
 		RHI::IPipelineState* m_skinningPipeline = nullptr;
 		RHI::IPipelineState* m_toneMapPipeline = nullptr;
+		RHI::IPipelineState* m_profilerHudPipeline = nullptr;
 		RHI::ITexture* m_depthStencilTarget = nullptr;
 		RHI::ITexture* m_hdrColorTarget = nullptr;
 		RHI::ITexture* m_shadowDepthTarget = nullptr;
@@ -85,5 +88,9 @@ namespace dy::Graphics
 		std::unique_ptr<IRenderPath> m_path;
 		RenderGraph m_renderGraph;
 		bool m_clipYFlip = false; // 백엔드 클립공간 Y 뒤집기 필요 여부(Initialize 에서 device 질의)
+		ProfilerHud m_profilerHud;
+		std::chrono::steady_clock::time_point m_lastFrameStart = {};
+		double m_lastCpuRenderMilliseconds = 0.0;
+		bool m_hasLastFrameStart = false;
 	};
 }
