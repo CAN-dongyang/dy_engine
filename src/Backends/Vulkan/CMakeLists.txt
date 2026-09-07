@@ -6,7 +6,7 @@ add_library(Backend_Vulkan OBJECT
 	VulkanPipeline.cpp
 )
 
-find_package(Vulkan REQUIRED)
+find_package(Vulkan 1.4 REQUIRED)
 
 target_link_libraries(Backend_Vulkan PRIVATE
 	Engine_Options
