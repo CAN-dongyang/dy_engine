@@ -188,6 +188,8 @@ CI는 Vulkan(Windows/Linux), D3D12(Windows), Metal(macOS)의 Debug/Release에서
 
 [지원 표](.github/ci-support.json)가 API별 예제 등록과 검사 범위를 결정합니다. 새 예제 또는 기능 시나리오를 추가할 때 세 API의 상태와 검사를 함께 등록합니다.
 
+`LightingLab`은 Vulkan에서 빌드·셰이더 검사를 수행합니다. `RenderGraph`는 세 API와 Null 구성에서 빌드 후 실행해 의존성 정렬 결과를 확인합니다.
+
 - `supported`: 구현된 경로. 최소 `build` 검사가 필요하며 렌더링 경로에는 `shader` 검사도 필요합니다.
 - `planned`: 이식 또는 확인 중. 현재 `checks`에 등록한 검사만 실행합니다.
 - `unsupported`: 해당 기능 미지원. 다른 API의 구현 완료를 기다리게 하지 않습니다.
