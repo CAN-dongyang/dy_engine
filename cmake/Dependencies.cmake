@@ -89,7 +89,7 @@ FetchContent_MakeAvailable(glfw)
 FetchContent_Declare(
     stb
     GIT_REPOSITORY "https://github.com/nothings/stb.git"
-    GIT_TAG "master"
+    GIT_TAG "31c1ad37456438565541f4919958214b6e762fb4"
 )
 FetchContent_MakeAvailable(stb)
 
@@ -111,7 +111,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC fastgltf::fastgltf)
 FetchContent_Declare(
     ufbx
     GIT_REPOSITORY "https://github.com/ufbx/ufbx.git"
-    GIT_TAG "master"
+    GIT_TAG "fcc5d6ba444cfd3eb80677dba5e37e493941abe5"
 )
 FetchContent_MakeAvailable(ufbx)
 target_include_directories(${PROJECT_NAME} PUBLIC ${ufbx_SOURCE_DIR})

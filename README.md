@@ -182,6 +182,32 @@ cmake -S . -B build/directx -DUSE_D3D12=ON -G "Visual Studio <your_version>" -A 
 cmake --build build/directx --config Release
 ```
 
+## CI와 API별 기능 통합
+
+CI는 Vulkan(Windows/Linux), D3D12(Windows), Metal(macOS)의 Debug/Release에서 등록된 전체 예제를 빌드합니다. 새 기능은 한 API부터 main에 병합할 수 있으며, 현재 지원 표에 등록된 빌드와 검사가 실패하면 CI도 실패합니다.
+
+[지원 표](.github/ci-support.json)가 API별 예제 등록과 검사 범위를 결정합니다. 새 예제 또는 기능 시나리오를 추가할 때 세 API의 상태와 검사를 함께 등록합니다.
+
+`LightingLab`은 Vulkan에서 빌드·셰이더 검사를 수행합니다. `RenderGraph`는 세 API와 Null 구성에서 빌드 후 실행해 의존성 정렬 결과를 확인합니다.
+
+- `supported`: 구현된 경로. 최소 `build` 검사가 필요하며 렌더링 경로에는 `shader` 검사도 필요합니다.
+- `planned`: 이식 또는 확인 중. 현재 `checks`에 등록한 검사만 실행합니다.
+- `unsupported`: 해당 기능 미지원. 다른 API의 구현 완료를 기다리게 하지 않습니다.
+
+지원 상태는 `supported`에서 `planned` 또는 `unsupported`로 언제든 변경할 수 있습니다. 예제 이름·타깃·경로·실행 인자와 검사·셰이더 목록도 수정하거나 삭제할 수 있으며, 이전 커밋과 비교해 변경을 금지하지 않습니다. 변경 후 설정 형식과 의존 관계는 유효해야 합니다. 예제 폴더를 남겨둔 채 지원 표에서 제외할 수 있고, 빈 `items`도 허용합니다. 현재 구조에서는 지원 표에서 제외한 예제가 로컬 빌드에서도 제외됩니다. 변경 이유는 Git 변경 내역과 PR 리뷰에서 확인합니다.
+
+초기 렌더링 항목은 담당자 확인 전까지 `planned`로 두고 빌드·셰이더 검사를 등록합니다. GPU 실행 검증은 별도이며 빌드 성공만으로 완료 처리하지 않습니다.
+
+로컬에서도 configure에 `-DDY_CI=ON`을 추가하면 같은 오프라인 셰이더 검사를 빌드합니다. Vulkan은 SDK 1.4 이상과 `glslc`, D3D12는 Windows SDK의 `fxc`, Metal 셰이더 검사를 등록한 경우 Xcode Metal 컴파일러가 필요합니다. 빌드 폴더는 백엔드별로 분리합니다.
+
+```bash
+python .github/scripts/check-ci-support.py --self-test
+python .github/scripts/check-ci-support.py --self-test-cmake
+python .github/scripts/check-ci-support.py --verify-build build/vulkan --api vulkan --config Release
+```
+
+`CI Required`를 main의 필수 검사로 지정하는 GitHub 설정과 이메일 알림은 workflow 게시 후 연결합니다.
+
 ## 실행 방법
 
 예제는 빌드 후 생성된 실행 파일 위치에서 실행합니다. 셰이더와 모델 파일이 실행 파일 폴더로 복사되므로, 다른 작업 디렉터리에서 직접 실행하면 상대 경로가 맞지 않을 수 있습니다.
