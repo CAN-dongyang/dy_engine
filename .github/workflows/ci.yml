@@ -2,41 +2,193 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
-jobs:
-  build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+permissions:
+  contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VULKAN_SDK_VERSION: 1.4.341.1
+
+jobs:
+  support-policy:
+    name: Support policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Check policy behavior
+        run: |
+          python .github/scripts/check-ci-support.py --self-test
+          python .github/scripts/check-ci-support.py --self-test-cmake
+      - name: Validate the current support manifest
+        shell: bash
+        run: |
+          mkdir -p build/ci-logs
+          python .github/scripts/check-ci-support.py | tee build/ci-logs/support-policy.log
+      - name: Save policy result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: support-policy
+          path: build/ci-logs
+          retention-days: 7
+
+  build:
+    name: ${{ matrix.platform }} ${{ matrix.api }} ${{ matrix.config }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows D3D12
-            os: windows-latest
-            backend_flag: USE_D3D12
-          - name: Ubuntu Vulkan
-            os: ubuntu-latest
-            backend_flag: USE_VULKAN
-          - name: macOS Metal
-            os: macos-latest
-            backend_flag: USE_METAL
+          - {platform: Windows, os: windows-2022, api: vulkan, config: Debug}
+          - {platform: Windows, os: windows-2022, api: vulkan, config: Release}
+          - {platform: Ubuntu, os: ubuntu-24.04, api: vulkan, config: Debug}
+          - {platform: Ubuntu, os: ubuntu-24.04, api: vulkan, config: Release}
+          - {platform: Windows, os: windows-2022, api: d3d12, config: Debug}
+          - {platform: Windows, os: windows-2022, api: d3d12, config: Release}
+          - {platform: macOS, os: macos-15, api: metal, config: Debug}
+          - {platform: macOS, os: macos-15, api: metal, config: Release}
+          - {platform: Ubuntu, os: ubuntu-24.04, api: 'null', config: Release}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan-dev xorg-dev
+          sudo apt-get install -y ninja-build xorg-dev pkg-config
 
-      - name: Configure
-        run: cmake -S . -B build -D${{ matrix.backend_flag }}=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Install Vulkan SDK on Linux
+        if: runner.os == 'Linux' && matrix.api == 'vulkan'
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/vulkansdk.tar.xz"
+          curl --fail --location --retry 3 "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz" -o "$archive"
+          echo "3bf0f762afb6c79bc6a9d9fb5998745ccff928800a29619b501ed9de7fd9789b  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/vulkan"
+          tar -xf "$archive" -C "$RUNNER_TEMP/vulkan"
+          sdk="$RUNNER_TEMP/vulkan/$VULKAN_SDK_VERSION/x86_64"
+          test -x "$sdk/bin/glslc"
+          echo "VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$sdk/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
 
-      - name: Build engine library
-        run: cmake --build build --config Release --target dy_engine --parallel
+      - name: Install Vulkan SDK on Windows
+        if: runner.os == 'Windows' && matrix.api == 'vulkan'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkansdk.exe'
+          $sdk = Join-Path $env:RUNNER_TEMP 'VulkanSDK'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $installer
+          if ((Get-FileHash -Algorithm SHA256 $installer).Hash -ne 'bcf2d75aa9556889ab974858666e20b3655b6055a0db704ccb47279ff33b5bfe') { throw 'Vulkan SDK checksum mismatch' }
+          $process = Start-Process -FilePath $installer -ArgumentList @('--root', "`"$sdk`"", '--accept-licenses', '--default-answer', '--confirm-command', 'install', 'copy_only=1') -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK install failed: $($process.ExitCode)" }
+          if (-not (Test-Path "$sdk/Bin/glslc.exe")) { throw 'Vulkan shader compiler missing' }
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          "$sdk/Bin" >> $env:GITHUB_PATH
+
+      - name: Locate Windows HLSL compiler
+        if: runner.os == 'Windows' && matrix.api == 'd3d12'
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe' | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $fxc) { throw 'Windows SDK FXC compiler missing' }
+          $fxc.Directory.FullName >> $env:GITHUB_PATH
+
+      - name: Inspect Metal toolchain
+        if: matrix.api == 'metal'
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-version
+
+      - name: Validate support manifest
+        shell: bash
+        run: python .github/scripts/check-ci-support.py
+
+      - name: Configure and build
+        shell: bash
+        env:
+          CI_API: ${{ matrix.api }}
+          CI_CONFIG: ${{ matrix.config }}
+        run: |
+          mkdir -p build/ci-logs
+          cmake --version | tee build/ci-logs/tools.log
+          python --version | tee -a build/ci-logs/tools.log
+          if [ "$CI_API" = vulkan ]; then glslc --version | tee -a build/ci-logs/tools.log; fi
+          options=(-DDY_CI=ON -DUSE_VULKAN=OFF -DUSE_D3D12=OFF -DUSE_METAL=OFF)
+          case "$CI_API" in
+            vulkan) options+=(-DUSE_VULKAN=ON) ;;
+            d3d12) options+=(-DUSE_D3D12=ON) ;;
+            metal) options+=(-DUSE_METAL=ON) ;;
+            null) options+=(-DDY_ENABLE_SIMD=OFF -DDY_ENABLE_TRACY=OFF) ;;
+            *) exit 1 ;;
+          esac
+          if [ "$RUNNER_OS" = Windows ]; then
+            options+=(-G 'Visual Studio 17 2022' -A x64)
+          else
+            options+=(-G Ninja "-DCMAKE_BUILD_TYPE=$CI_CONFIG")
+          fi
+          if [ "$RUNNER_OS" = Linux ]; then options+=(-DDY_LINUX_WINDOW_SYSTEM=X11); fi
+          cmake -S . -B build/ci "${options[@]}" 2>&1 | tee build/ci-logs/configure.log
+          cmake --build build/ci --config "$CI_CONFIG" --parallel 4 2>&1 | tee build/ci-logs/build.log
+
+      - name: Verify example and shader outputs; run registered CPU checks
+        shell: bash
+        env:
+          CI_API: ${{ matrix.api }}
+          CI_CONFIG: ${{ matrix.config }}
+        run: |
+          python .github/scripts/check-ci-support.py --verify-build build/ci --config "$CI_CONFIG" --api "$CI_API" 2>&1 | tee build/ci-logs/checks.log
+
+      - name: Publish job summary
+        if: always()
+        shell: bash
+        env:
+          JOB_RESULT: ${{ job.status }}
+          CI_API: ${{ matrix.api }}
+          CI_CONFIG: ${{ matrix.config }}
+        run: |
+          printf '### %s / %s / %s\n\nResult: %s\n\nCommit: `%s`\n\n' "$RUNNER_OS" "$CI_API" "$CI_CONFIG" "$JOB_RESULT" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Registered examples are built; feature checks follow the API support contract. GPU execution is not verified by this job.\n' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f build/ci-logs/checks.log ]; then
+            printf '\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 35 build/ci-logs/checks.log >> "$GITHUB_STEP_SUMMARY"
+            printf '\n```\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save build diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-${{ matrix.platform }}-${{ matrix.api }}-${{ matrix.config }}
+          path: |
+            build/ci-logs
+            build/ci/CMakeFiles/CMakeConfigureLog.yaml
+            build/ci/ci-targets-*.json
+            build/ci/ci-checks
+          retention-days: 7
+
+  required:
+    name: CI Required
+    runs-on: ubuntu-24.04
+    needs: [support-policy, build]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Require every baseline job to succeed
+        env:
+          POLICY_RESULT: ${{ needs.support-policy.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$POLICY_RESULT" = success
+          test "$BUILD_RESULT" = success
